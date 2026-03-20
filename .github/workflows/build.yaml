@@ -4,7 +4,7 @@ on:
   push:
     branches: [ "master" ]
   pull_request:
-    branches: [ "master" ]
+    branches: [ "master", "dev" ]
 
 env:
   CARGO_TERM_COLOR: always
@@ -20,7 +20,7 @@ jobs:
         name: [ linux, windows, macos ]
         include:
           - name: linux
-            os: ubuntu-latest
+            os: ubuntu-24.04
           - name: windows
             os: windows-latest
           - name: macos
