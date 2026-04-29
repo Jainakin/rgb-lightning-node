@@ -1,0 +1,48 @@
+[package]
+name = "rln-c-ffi"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.88.0"
+build = "build.rs"
+publish = false
+
+[lib]
+crate-type = ["staticlib", "cdylib"]
+name = "rlncffi"
+
+[dependencies]
+rgb-lightning-node = { path = "../..", features = ["uniffi"] }
+# Direct deps on `lightning` and `lightning-invoice` so we can construct the
+# typed wrappers (`PaymentHash`, `ChannelId`, `Bolt11Invoice`) by their real
+# crate paths — `rgb_lightning_node::PaymentHash` etc. are type aliases and
+# Rust 2021 doesn't allow tuple-struct construction through an alias.
+lightning = { version = "0.2.0", path = "../../rust-lightning/lightning" }
+lightning-invoice = { version = "0.34.0", path = "../../rust-lightning/lightning-invoice", features = ["std"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+thiserror = "2.0"
+hex = { package = "hex-conservative", version = "0.3.0" }
+
+[build-dependencies]
+cbindgen = "0.29.0"
+
+[features]
+default = []
+
+# Empty workspace declaration: this sub-crate is intentionally its own
+# Cargo workspace, separate from the parent `rgb-lightning-node` package
+# (which depends on `rust-lightning` via path; that submodule is its own
+# workspace with its own `[workspace.lints]`). The committed Cargo.lock
+# ensures `rgb-lib` resolves to the same revision the parent crate uses.
+[workspace]
+
+# Mirror the parent crate's `[patch.crates-io]` so registry crates that
+# depend on `lightning` / `lightning-background-processor` (e.g.
+# `lightning-net-tokio`, `lightning-block-sync`) are unified onto the
+# pinned `rust-lightning` submodule. Without this, the type identities
+# of `lightning::*` items from the path version and the registry version
+# diverge and trigger trait-bound errors when building the parent crate
+# from inside this workspace.
+[patch.crates-io]
+lightning = { path = "../../rust-lightning/lightning" }
+lightning-background-processor = { path = "../../rust-lightning/lightning-background-processor" }
