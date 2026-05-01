@@ -1,18 +1,24 @@
+use crate::rgb_kv_store::RgbKvStoreExt;
+use crate::signer::RlnKeysInterface;
+use bitcoin::bip32::ChildNumber;
+use bitcoin::bip32::Xpub;
 use bitcoin::blockdata::constants::WITNESS_SCALE_FACTOR;
 use bitcoin::blockdata::script::ScriptBuf;
 use bitcoin::hashes::Hash;
+use bitcoin::key::CompressedPublicKey;
 use bitcoin::key::XOnlyPublicKey;
 use bitcoin::psbt::Psbt;
+use bitcoin::secp256k1::Secp256k1;
 use bitcoin::{Address, Network, OutPoint, Transaction, TxOut, WPubkeyHash};
 use hex::DisplayHex;
 use lightning::events::bump_transaction::{Utxo, WalletSource};
 use lightning::ln::types::ChannelId;
-use lightning::rgb_utils::{RgbInfo, RgbKvStoreExt};
+use lightning::rgb_utils::RgbInfo;
 use lightning::sign::ChangeDestinationSource;
 use lightning::util::async_poll::AsyncResult;
 use lightning::util::persist::KVStoreSync;
 use rgb_lib::{
-    bdk_wallet::SignOptions,
+    bdk_wallet::{LocalOutput, SignOptions},
     bitcoin::psbt::Psbt as BitcoinPsbt,
     wallet::{
         rust_only::{check_proxy_url, ColoringInfo},
@@ -32,6 +38,156 @@ use std::sync::{Arc, Mutex, MutexGuard};
 use crate::{error::APIError, utils::UnlockedAppState};
 
 impl UnlockedAppState {
+    fn rgb_signer_descriptors_for_psbt(
+        &self,
+        unsigned_psbt: &str,
+    ) -> Result<Vec<String>, RgbLibError> {
+        let psbt = Psbt::from_str(unsigned_psbt).map_err(|e| RgbLibError::Internal {
+            details: format!("invalid unsigned PSBT for external signer: {e}"),
+        })?;
+        let vanilla_unspents = self.rgb_wallet_wrapper.list_unspents_vanilla(1, true)?;
+        let signer_account = self.signer.rgb_wallet_account();
+        let network = Network::from_str(
+            self.rgb_wallet_wrapper
+                .bitcoin_network()
+                .to_string()
+                .to_lowercase()
+                .as_str(),
+        )
+        .map_err(|e| RgbLibError::Internal {
+            details: format!("invalid bitcoin network for signer descriptor derivation: {e}"),
+        })?;
+        let secp = Secp256k1::verification_only();
+        let account_xpubs = [
+            Xpub::from_str(&signer_account.account_xpub_colored).ok(),
+            Xpub::from_str(&signer_account.account_xpub_vanilla).ok(),
+        ];
+
+        let infer_keyindex_from_script = |script: &ScriptBuf| -> Option<u32> {
+            for idx in 0u32..10_000 {
+                let idx_child = ChildNumber::from_normal_idx(idx).ok()?;
+                for base_xpub in account_xpubs.iter().flatten() {
+                    // Legacy one-level account child: /idx
+                    let one_level = base_xpub.derive_pub(&secp, &[idx_child]).ok()?;
+                    let one_level_cpk =
+                        CompressedPublicKey::from_slice(&one_level.public_key.serialize()).ok()?;
+                    let one_level_p2wpkh = Address::p2wpkh(&one_level_cpk, network).script_pubkey();
+                    if &one_level_p2wpkh == script {
+                        return Some(idx);
+                    }
+                    let (one_level_xonly, _) = one_level.public_key.x_only_public_key();
+                    let one_level_p2tr =
+                        Address::p2tr(&secp, one_level_xonly, None, network).script_pubkey();
+                    if &one_level_p2tr == script {
+                        return Some(idx);
+                    }
+
+                    // BIP86/BIP84 style branch paths: /0/idx and /1/idx.
+                    for branch in [0u32, 1u32] {
+                        let branch_child = ChildNumber::from_normal_idx(branch).ok()?;
+                        let child = base_xpub
+                            .derive_pub(&secp, &[branch_child, idx_child])
+                            .ok()?;
+                        let cpk =
+                            CompressedPublicKey::from_slice(&child.public_key.serialize()).ok()?;
+                        let p2wpkh = Address::p2wpkh(&cpk, network).script_pubkey();
+                        if &p2wpkh == script {
+                            return Some(idx);
+                        }
+                        let (xonly, _) = child.public_key.x_only_public_key();
+                        let p2tr = Address::p2tr(&secp, xonly, None, network).script_pubkey();
+                        if &p2tr == script {
+                            return Some(idx);
+                        }
+                    }
+                }
+            }
+            None
+        };
+
+        let mut by_outpoint = HashMap::with_capacity(vanilla_unspents.len());
+        for u in vanilla_unspents {
+            by_outpoint.insert((u.outpoint.txid, u.outpoint.vout), u);
+        }
+
+        let mut descriptors = Vec::with_capacity(psbt.inputs.len());
+        for (idx, input) in psbt.inputs.iter().enumerate() {
+            let prevout = psbt
+                .unsigned_tx
+                .input
+                .get(idx)
+                .ok_or_else(|| RgbLibError::Internal {
+                    details: format!("PSBT input index {idx} missing in unsigned tx"),
+                })?
+                .previous_output;
+            let local = by_outpoint
+                .get(&(prevout.txid, prevout.vout))
+                .ok_or_else(|| RgbLibError::Internal {
+                    details: format!(
+                        "cannot map PSBT input {}:{} to wallet unspents for external signer",
+                        prevout.txid, prevout.vout
+                    ),
+                })?;
+            let witness_utxo =
+                input
+                    .witness_utxo
+                    .as_ref()
+                    .ok_or_else(|| RgbLibError::Internal {
+                        details: format!("PSBT input index {idx} missing witness_utxo"),
+                    })?;
+            let keyindex_from_psbt = input
+                .bip32_derivation
+                .values()
+                .find_map(|(_, path)| path.as_ref().last().copied())
+                .and_then(|cn| match cn {
+                    ChildNumber::Normal { index } => Some(index),
+                    ChildNumber::Hardened { .. } => None,
+                });
+            let signer_meta = self.external_signer.as_ref().and_then(|s| {
+                s.get_wallet_input_metadata(
+                    prevout.txid.to_string(),
+                    prevout.vout,
+                    Some(witness_utxo.script_pubkey.as_bytes().as_hex().to_string()),
+                    Some(witness_utxo.value.to_sat()),
+                )
+                .ok()
+                .flatten()
+            });
+            let keyindex = if self.external_signer_mode {
+                signer_meta
+                    .as_ref()
+                    .map(|m| m.keyindex)
+                    .ok_or_else(|| RgbLibError::Internal {
+                        details: format!(
+                            "external signer did not return wallet input metadata for {}:{}",
+                            prevout.txid, prevout.vout
+                        ),
+                    })?
+            } else {
+                signer_meta
+                    .as_ref()
+                    .map(|m| m.keyindex)
+                    .or_else(|| infer_keyindex_from_script(&witness_utxo.script_pubkey))
+                    .or(keyindex_from_psbt)
+                    .unwrap_or(local.derivation_index)
+            };
+            let descriptor = serde_json::json!({
+                "txid": prevout.txid.to_string(),
+                "outnum": prevout.vout,
+                "amount": signer_meta.as_ref().map(|m| m.amount_sat).unwrap_or_else(|| witness_utxo.value.to_sat()),
+                "keyindex": keyindex,
+                "is_p2sh": signer_meta.as_ref().map(|m| m.is_p2sh).unwrap_or(false),
+                "script_hex": signer_meta
+                    .as_ref()
+                    .map(|m| m.script_pubkey_hex.clone())
+                    .unwrap_or_else(|| witness_utxo.script_pubkey.as_bytes().as_hex().to_string()),
+                "is_in_coinbase": false,
+            });
+            descriptors.push(descriptor.to_string());
+        }
+        Ok(descriptors)
+    }
+
     pub(crate) fn rgb_blind_receive(
         &self,
         asset_id: Option<String>,
@@ -71,6 +227,27 @@ impl UnlockedAppState {
     ) -> Result<u8, RgbLibError> {
         self.rgb_wallet_wrapper
             .create_utxos(up_to, num, size, fee_rate, skip_sync)
+    }
+
+    pub(crate) fn rgb_create_utxos_begin(
+        &self,
+        up_to: bool,
+        num: u8,
+        size: u32,
+        fee_rate: u64,
+        skip_sync: bool,
+    ) -> Result<String, RgbLibError> {
+        self.rgb_wallet_wrapper
+            .create_utxos_begin(up_to, num, size, fee_rate, skip_sync)
+    }
+
+    pub(crate) fn rgb_create_utxos_end(
+        &self,
+        signed_psbt: String,
+        skip_sync: bool,
+    ) -> Result<u8, RgbLibError> {
+        self.rgb_wallet_wrapper
+            .create_utxos_end(signed_psbt, skip_sync)
     }
 
     pub(crate) fn rgb_fail_transfers(
@@ -322,7 +499,43 @@ impl UnlockedAppState {
     }
 
     pub(crate) fn rgb_sign_psbt(&self, unsigned_psbt: String) -> Result<String, RgbLibError> {
-        self.rgb_wallet_wrapper.sign_psbt(unsigned_psbt)
+        let signer_descriptors = if self.external_signer_mode {
+            self.rgb_signer_descriptors_for_psbt(unsigned_psbt.as_str())?
+        } else {
+            vec![]
+        };
+        match self
+            .signer
+            .sign_rgb_psbt(signer_descriptors, unsigned_psbt.clone())
+        {
+            Ok(signed) => Ok(signed),
+            Err(e) if self.external_signer_mode => {
+                tracing::error!(error = %e, "external signer RGB PSBT signing failed");
+                match self.rgb_wallet_wrapper.sign_psbt(unsigned_psbt.clone()) {
+                    Ok(signed) => {
+                        tracing::warn!(
+                            "falling back to local RGB wallet PSBT signing after external signer failure"
+                        );
+                        Ok(signed)
+                    }
+                    Err(fallback_err) => {
+                        tracing::error!(
+                            fallback_error = %fallback_err,
+                            "local fallback PSBT signing failed"
+                        );
+                        Err(RgbLibError::Internal {
+                            details: format!(
+                                "external signer RGB PSBT signing failed: {e}; local fallback failed: {fallback_err}"
+                            ),
+                        })
+                    }
+                }
+            }
+            Err(_) => {
+                // Internal mnemonic mode preserves wallet fallback signing behavior.
+                self.rgb_wallet_wrapper.sign_psbt(unsigned_psbt)
+            }
+        }
     }
 
     pub(crate) fn rgb_sync(&self) -> Result<(), RgbLibError> {
@@ -428,6 +641,33 @@ impl RgbLibWalletWrapper {
             fee_rate,
             skip_sync,
         )
+    }
+
+    pub(crate) fn create_utxos_begin(
+        &self,
+        up_to: bool,
+        num: u8,
+        size: u32,
+        fee_rate: u64,
+        skip_sync: bool,
+    ) -> Result<String, RgbLibError> {
+        self.get_rgb_wallet().create_utxos_begin(
+            self.online,
+            up_to,
+            Some(num),
+            Some(size),
+            fee_rate,
+            skip_sync,
+        )
+    }
+
+    pub(crate) fn create_utxos_end(
+        &self,
+        signed_psbt: String,
+        skip_sync: bool,
+    ) -> Result<u8, RgbLibError> {
+        self.get_rgb_wallet()
+            .create_utxos_end(self.online, signed_psbt, skip_sync)
     }
 
     pub(crate) fn fail_transfers(
@@ -594,6 +834,15 @@ impl RgbLibWalletWrapper {
             .list_unspents(online, false, skip_sync)
     }
 
+    pub(crate) fn list_unspents_vanilla(
+        &self,
+        min_confirmations: u8,
+        skip_sync: bool,
+    ) -> Result<Vec<LocalOutput>, RgbLibError> {
+        self.get_rgb_wallet()
+            .list_unspents_vanilla(self.online, min_confirmations, skip_sync)
+    }
+
     pub(crate) fn post_consignment<P: AsRef<Path>>(
         &self,
         proxy_url: &str,
@@ -697,7 +946,17 @@ impl RgbLibWalletWrapper {
     }
 
     pub(crate) fn sign_psbt(&self, unsigned_psbt: String) -> Result<String, RgbLibError> {
-        self.get_rgb_wallet().sign_psbt(unsigned_psbt, None)
+        let sign_options = SignOptions {
+            trust_witness_utxo: true,
+            try_finalize: true,
+            sign_with_tap_internal_key: true,
+            ..Default::default()
+        };
+        let signed = self
+            .get_rgb_wallet()
+            .sign_psbt(unsigned_psbt, Some(sign_options.clone()))?;
+        self.get_rgb_wallet()
+            .finalize_psbt(signed, Some(sign_options))
     }
 
     pub(crate) fn sync(&self) -> Result<(), RgbLibError> {

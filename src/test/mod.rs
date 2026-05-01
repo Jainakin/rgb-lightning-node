@@ -5,7 +5,7 @@ use bitcoin::hashes::Hash;
 use bitcoin::secp256k1::PublicKey;
 use chrono::{DateTime, Local, Utc};
 use electrum_client::ElectrumApi;
-use lightning::rgb_utils::{RgbPaymentInfo, RGB_PAYMENT_INFO_OUTBOUND_NS, RGB_PRIMARY_NS};
+use lightning::rgb_utils::RgbPaymentInfo;
 use lightning::util::hash_tables::new_hash_map;
 use lightning::util::persist::KVStoreSync;
 use lightning::util::ser::Readable;
@@ -30,6 +30,7 @@ use crate::core_types::{HTLCStatus, SwapStatus, FEE_RATE, HTLC_MIN_MSAT};
 use crate::error::{APIError, APIErrorResponse};
 use crate::kv_store::SeaOrmKvStore;
 use crate::ldk::{InboundPaymentInfoStorage, InvoiceType, INBOUND_PAYMENTS_KEY};
+use crate::rgb_kv_store::{RGB_PAYMENT_INFO_OUTBOUND_NS, RGB_PRIMARY_NS};
 use crate::routes::{
     AddressResponse, AssetBalanceRequest, AssetBalanceResponse, AssetCFA, AssetIFA, AssetNIA,
     AssetUDA, Assignment, BackupRequest, BtcBalanceRequest, BtcBalanceResponse,
@@ -195,6 +196,12 @@ async fn start_daemon_with_virtual_options(
     enable_virtual_channels_v0: bool,
     virtual_peer_pubkeys: Vec<PublicKey>,
 ) -> SocketAddr {
+    if let Ok(injected_addr) = std::env::var("RLN_TEST_INJECT_DAEMON_ADDR") {
+        if let Ok(addr) = injected_addr.parse::<SocketAddr>() {
+            return addr;
+        }
+    }
+
     if !keep_node_dir && Path::new(&node_test_dir).is_dir() {
         std::fs::remove_dir_all(node_test_dir).unwrap();
     }

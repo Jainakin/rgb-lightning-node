@@ -96,6 +96,117 @@ jobs:
         if: always()
         run: ./regtest.sh stop
 
+  python-external-signer-regular:
+    name: Python E2E (external-signer-regular-flow-real)
+    runs-on: warp-ubuntu-latest-x64-16x
+    timeout-minutes: 60
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          submodules: true
+
+      - name: Setup Rust
+        uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          toolchain: 1.88.0
+          rustflags: ""
+
+      - name: Cache Rust build artifacts
+        uses: Swatinem/rust-cache@v2
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Start regtest services
+        run: ./regtest.sh start
+
+      - name: Run native external signer E2E
+        env:
+          RESET_DATA: "1"
+          EXTERNAL_SIGNER_SCENARIO: "regular-flow-real"
+        run: ./scripts/ci/external_signer_real_e2e.sh
+
+      - name: Stop regtest services
+        if: always()
+        run: ./regtest.sh stop
+
+  python-external-signer-mismatch:
+    name: Python E2E (external-signer-restart-mismatch-real)
+    runs-on: warp-ubuntu-latest-x64-16x
+    timeout-minutes: 60
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          submodules: true
+
+      - name: Setup Rust
+        uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          toolchain: 1.88.0
+          rustflags: ""
+
+      - name: Cache Rust build artifacts
+        uses: Swatinem/rust-cache@v2
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Start regtest services
+        run: ./regtest.sh start
+
+      - name: Run native external signer mismatch E2E
+        env:
+          RESET_DATA: "1"
+          EXTERNAL_SIGNER_SCENARIO: "restart-mismatch-real"
+        run: ./scripts/ci/external_signer_real_e2e.sh
+
+      - name: Stop regtest services
+        if: always()
+        run: ./regtest.sh stop
+
+  python-external-signer-recovery:
+    name: Python E2E (external-signer-connection-loss-real)
+    runs-on: warp-ubuntu-latest-x64-16x
+    timeout-minutes: 60
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          submodules: true
+
+      - name: Setup Rust
+        uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          toolchain: 1.88.0
+          rustflags: ""
+
+      - name: Cache Rust build artifacts
+        uses: Swatinem/rust-cache@v2
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Start regtest services
+        run: ./regtest.sh start
+
+      - name: Run native external signer recovery E2E
+        env:
+          RESET_DATA: "1"
+          EXTERNAL_SIGNER_SCENARIO: "connection-loss-real"
+        run: ./scripts/ci/external_signer_real_e2e.sh
+
+      - name: Stop regtest services
+        if: always()
+        run: ./regtest.sh stop
+
   kotlin-build:
     name: Kotlin E2E Build
     runs-on: warp-ubuntu-latest-x64-16x

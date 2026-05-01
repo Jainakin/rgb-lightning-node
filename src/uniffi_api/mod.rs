@@ -1,12 +1,17 @@
+#[cfg(feature = "vls")]
+mod native_signer;
 pub(crate) mod state;
 mod types;
 
 use std::str::FromStr;
+use std::sync::Arc;
 
 use crate::sdk;
 use crate::{NodeConfig, NodeHandle};
 use bitcoin::hex::DisplayHex;
 use bitcoin::hex::FromHex;
+#[cfg(feature = "vls")]
+pub use native_signer::NativeExternalSigner;
 use state::{
     block_on_app, block_on_sdk, clear_uniffi_node_handle, get_uniffi_app_state,
     is_uniffi_app_state_initialized, set_uniffi_node_handle,
@@ -22,6 +27,11 @@ pub fn uniffi_is_initialized() -> bool {
     is_uniffi_app_state_initialized()
 }
 
+#[uniffi::export(with_foreign)]
+pub trait ExternalSignerHost: Send + Sync {
+    fn call(&self, request: Vec<u8>) -> Result<Vec<u8>, RlnError>;
+}
+
 fn network_from_str(network: &str) -> Result<rgb_lib::BitcoinNetwork, RlnError> {
     match network.to_lowercase().as_str() {
         "mainnet" => Ok(rgb_lib::BitcoinNetwork::Mainnet),
@@ -30,6 +40,57 @@ fn network_from_str(network: &str) -> Result<rgb_lib::BitcoinNetwork, RlnError> 
         "signet" => Ok(rgb_lib::BitcoinNetwork::Signet),
         "regtest" => Ok(rgb_lib::BitcoinNetwork::Regtest),
         _ => Err(RlnError::InvalidRequest),
+    }
+}
+
+fn bootstrap_from_uniffi(data: SdkExternalSignerBootstrap) -> crate::signer::BootstrapData {
+    crate::signer::BootstrapData {
+        identity: crate::signer::SignerIdentity {
+            node_id: data.node_id,
+            account_xpub_vanilla: data.account_xpub_vanilla,
+            account_xpub_colored: data.account_xpub_colored,
+            master_fingerprint: data.master_fingerprint,
+        },
+        protocol_version: data.protocol_version,
+        api_level: data.api_level,
+    }
+}
+
+fn attach_host_with_expected_bootstrap(
+    state: &std::sync::Arc<crate::utils::AppState>,
+    host: Arc<dyn ExternalSignerHost>,
+    expected: crate::signer::BootstrapData,
+) -> Result<(), RlnError> {
+    let transport: Arc<dyn crate::signer::ExternalSignerTransport> =
+        Arc::new(UniffiExternalSignerTransport::new(host));
+    let attachment =
+        crate::ldk::attach_external_signer_transport(transport).map_err(state::map_api_error)?;
+    if attachment.bootstrap != expected {
+        return Err(state::map_api_error(
+            crate::error::APIError::ExternalSignerMismatch,
+        ));
+    }
+    state.set_attached_external_signer(Some(attachment));
+    Ok(())
+}
+
+fn bootstrap_from_parts(
+    node_id: String,
+    account_xpub_vanilla: String,
+    account_xpub_colored: String,
+    master_fingerprint: String,
+    protocol_version: String,
+    api_level: u32,
+) -> crate::signer::BootstrapData {
+    crate::signer::BootstrapData {
+        identity: crate::signer::SignerIdentity {
+            node_id,
+            account_xpub_vanilla,
+            account_xpub_colored,
+            master_fingerprint,
+        },
+        protocol_version,
+        api_level,
     }
 }
 
@@ -241,6 +302,18 @@ impl SdkNode {
         let state = self.handle.app_state();
         let response = block_on_sdk(sdk::init(state, password, mnemonic))?;
         Ok(response.mnemonic)
+    }
+
+    pub fn init_with_external_signer(
+        &self,
+        bootstrap: SdkExternalSignerBootstrap,
+    ) -> Result<(), RlnError> {
+        let state = self.handle.app_state();
+        block_on_sdk(sdk::init_with_external_signer(
+            state,
+            bootstrap_from_uniffi(bootstrap),
+        ))?;
+        Ok(())
     }
 
     pub fn unlock(&self, request: SdkUnlockRequest) -> Result<(), RlnError> {
@@ -1303,6 +1376,130 @@ impl SdkNode {
     }
 }
 
+#[uniffi::export]
+impl SdkNode {
+    pub fn attach_external_signer(
+        &self,
+        host: Arc<dyn ExternalSignerHost>,
+        node_id: String,
+        account_xpub_vanilla: String,
+        account_xpub_colored: String,
+        master_fingerprint: String,
+        protocol_version: String,
+        api_level: u32,
+    ) -> Result<(), RlnError> {
+        let state = self.handle.app_state();
+        let expected = bootstrap_from_parts(
+            node_id,
+            account_xpub_vanilla,
+            account_xpub_colored,
+            master_fingerprint,
+            protocol_version,
+            api_level,
+        );
+        attach_host_with_expected_bootstrap(&state, host, expected)
+    }
+
+    pub fn detach_external_signer(&self) {
+        self.handle.app_state().set_attached_external_signer(None);
+    }
+
+    #[cfg(feature = "vls")]
+    pub fn init_with_native_external_signer(
+        &self,
+        signer: Arc<NativeExternalSigner>,
+    ) -> Result<(), RlnError> {
+        self.init_with_external_signer(signer.bootstrap()?)
+    }
+
+    #[cfg(feature = "vls")]
+    pub fn attach_native_external_signer(
+        &self,
+        signer: Arc<NativeExternalSigner>,
+    ) -> Result<(), RlnError> {
+        let state = self.handle.app_state();
+        let expected = bootstrap_from_uniffi(signer.bootstrap()?);
+        let host: Arc<dyn ExternalSignerHost> = signer;
+        attach_host_with_expected_bootstrap(&state, host, expected)
+    }
+
+    pub fn unlock_with_attached_external_signer(
+        &self,
+        node_id: String,
+        account_xpub_vanilla: String,
+        account_xpub_colored: String,
+        master_fingerprint: String,
+        protocol_version: String,
+        api_level: u32,
+        bitcoind_rpc_username: String,
+        bitcoind_rpc_password: String,
+        bitcoind_rpc_host: String,
+        bitcoind_rpc_port: u16,
+        indexer_url: Option<String>,
+        proxy_endpoint: Option<String>,
+        announce_addresses: Vec<String>,
+        announce_alias: Option<String>,
+    ) -> Result<(), RlnError> {
+        let state = self.handle.app_state();
+        block_on_sdk(sdk::unlock_with_attached_external_signer(
+            state,
+            sdk::UnlockRequest {
+                password: String::new(),
+                bitcoind_rpc_username,
+                bitcoind_rpc_password,
+                bitcoind_rpc_host,
+                bitcoind_rpc_port,
+                indexer_url,
+                proxy_endpoint,
+                announce_addresses,
+                announce_alias,
+            },
+            bootstrap_from_parts(
+                node_id,
+                account_xpub_vanilla,
+                account_xpub_colored,
+                master_fingerprint,
+                protocol_version,
+                api_level,
+            ),
+        ))?;
+        Ok(())
+    }
+
+    #[cfg(feature = "vls")]
+    pub fn unlock_with_native_external_signer(
+        &self,
+        signer: Arc<NativeExternalSigner>,
+        bitcoind_rpc_username: String,
+        bitcoind_rpc_password: String,
+        bitcoind_rpc_host: String,
+        bitcoind_rpc_port: u16,
+        indexer_url: Option<String>,
+        proxy_endpoint: Option<String>,
+        announce_addresses: Vec<String>,
+        announce_alias: Option<String>,
+    ) -> Result<(), RlnError> {
+        self.attach_native_external_signer(signer.clone())?;
+        let bootstrap = signer.bootstrap()?;
+        self.unlock_with_attached_external_signer(
+            bootstrap.node_id,
+            bootstrap.account_xpub_vanilla,
+            bootstrap.account_xpub_colored,
+            bootstrap.master_fingerprint,
+            bootstrap.protocol_version,
+            bootstrap.api_level,
+            bitcoind_rpc_username,
+            bitcoind_rpc_password,
+            bitcoind_rpc_host,
+            bitcoind_rpc_port,
+            indexer_url,
+            proxy_endpoint,
+            announce_addresses,
+            announce_alias,
+        )
+    }
+}
+
 pub fn sdk_initialize(request: SdkInitRequest) -> Result<(), RlnError> {
     // Compatibility path for existing clients using process-global state.
     let handle = handle_from_request(request)?;
@@ -1319,6 +1516,13 @@ pub fn sdk_shutdown() {
         });
     }
     clear_uniffi_node_handle();
+}
+
+pub fn sdk_init_with_external_signer(
+    bootstrap: SdkExternalSignerBootstrap,
+) -> Result<(), RlnError> {
+    let handle = NodeHandle::from_app_state(get_uniffi_app_state()?);
+    SdkNode { handle }.init_with_external_signer(bootstrap)
 }
 
 pub fn sdk_node_info() -> Result<NodeInfo, RlnError> {
@@ -1477,6 +1681,25 @@ pub fn sdk_send_rgb(request: SendRgbRequest) -> Result<SendRgbResponse, RlnError
 }
 
 uniffi::include_scaffolding!("rgb_lightning_node");
+
+#[derive(Clone)]
+struct UniffiExternalSignerTransport {
+    host: Arc<dyn ExternalSignerHost>,
+}
+
+impl UniffiExternalSignerTransport {
+    fn new(host: Arc<dyn ExternalSignerHost>) -> Self {
+        Self { host }
+    }
+}
+
+impl crate::signer::ExternalSignerTransport for UniffiExternalSignerTransport {
+    fn call(&self, request: &[u8]) -> Result<Vec<u8>, crate::signer::RlnSignerError> {
+        self.host.call(request.to_vec()).map_err(|e| {
+            crate::signer::RlnSignerError::Transport(format!("host callback failed: {e}"))
+        })
+    }
+}
 
 #[cfg(test)]
 mod tests;

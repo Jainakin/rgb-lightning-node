@@ -28,6 +28,12 @@ pub enum RlnError {
     Internal,
 }
 
+impl From<uniffi::UnexpectedUniFFICallbackError> for RlnError {
+    fn from(_: uniffi::UnexpectedUniFFICallbackError) -> Self {
+        Self::Internal
+    }
+}
+
 pub struct NodeInfo {
     pub pubkey: PublicKey,
     pub num_channels: u64,
@@ -431,6 +437,15 @@ pub struct SdkUnlockRequest {
     pub proxy_endpoint: Option<String>,
     pub announce_addresses: Vec<String>,
     pub announce_alias: Option<String>,
+}
+
+pub struct SdkExternalSignerBootstrap {
+    pub node_id: String,
+    pub account_xpub_vanilla: String,
+    pub account_xpub_colored: String,
+    pub master_fingerprint: String,
+    pub protocol_version: String,
+    pub api_level: u32,
 }
 
 pub struct SdkOpenChannelRequest {

@@ -47,34 +47,86 @@ Virtual channels SDK test:
 python3 src/uniffi_api/examples/python-interop/manual_py_virtual_channels_sdk.py
 ```
 
+External signer E2E examples:
+
+1. Regular channel flow with real native external signer via UniFFI:
+
+```sh
+export RLN_TEST_NATIVE_SIGNER_SEED_HEX="$(printf '11%.0s' {1..32})"
+RESET_DATA=1 \
+python3 src/uniffi_api/examples/python-interop/manual_py_external_signer_e2e.py \
+  --scenario regular-flow-real
+```
+
+Note:
+- No HTTP endpoint is used in this flow.
+- Python constructs `NativeExternalSigner(...)` directly from the seed.
+- The UniFFI flow now uses:
+  - `init_with_native_external_signer(...)`
+  - `unlock_with_native_external_signer(...)`
+
+Stable shell target for the same real flow:
+
+```sh
+START_REGTEST=1 \
+./scripts/ci/external_signer_real_e2e.sh
+```
+
 Optional env overrides:
 
 ```sh
-RESET_DATA=1 \
-NODE_A_STORAGE="$PWD/sdkdata_py/node_a" \
-NODE_B_STORAGE="$PWD/sdkdata_py/node_b" \
-NODE_A_PEER_PORT=9735 \
-NODE_B_PEER_PORT=9736 \
-OPEN_CHANNEL_ASSET_AMOUNT=200 \
-PAYMENT_ASSET_AMOUNT=50 \
-PAYMENT_MSAT=3000000 \
-OPEN_CHANNEL_CONFIRM_BLOCKS=12 \
-CHANNEL_READY_TIMEOUT_SEC=300 \
-python3 src/uniffi_api/examples/python-interop/manual_py_full_n2n.py
+export RLN_TEST_NATIVE_SIGNER_SEED_HEX="$(printf '22%.0s' {1..32})"
+export RLN_TEST_NATIVE_SIGNER_NETWORK="regtest"
+export RLN_TEST_NATIVE_SIGNER_PERMISSIVE_POLICY="1"
+./scripts/ci/external_signer_real_e2e.sh
 ```
+
+2. Real signer mismatch rejection on restart:
+
+```sh
+RESET_DATA=1 \
+python3 src/uniffi_api/examples/python-interop/manual_py_external_signer_e2e.py \
+  --scenario restart-mismatch-real
+```
+
+3. Real signer restart-without-reattach and recovery:
+
+```sh
+RESET_DATA=1 \
+python3 src/uniffi_api/examples/python-interop/manual_py_external_signer_e2e.py \
+  --scenario connection-loss-real
+```
+
+Stable shell target for any supported native signer scenario:
+
+```sh
+START_REGTEST=1 \
+EXTERNAL_SIGNER_SCENARIO=regular-flow-real \
+./scripts/ci/external_signer_real_e2e.sh
+```
+
+Other supported scenarios:
+
+```sh
+START_REGTEST=1 \
+EXTERNAL_SIGNER_SCENARIO=restart-mismatch-real \
+./scripts/ci/external_signer_real_e2e.sh
+
+START_REGTEST=1 \
+EXTERNAL_SIGNER_SCENARIO=connection-loss-real \
+./scripts/ci/external_signer_real_e2e.sh
+```
+
+In this scenario:
+- payment succeeds
+- node restarts without a reattached signer and unlock fails
+- same signer is reattached
+- unlock succeeds and payment resumes
 
 Or for the virtual channels SDK test:
 
 ```sh
 RESET_DATA=1 \
-python3 src/uniffi_api/examples/python-interop/manual_py_virtual_channels_sdk.py
-```
-
-Strict close check (host-authoritative):
-
-```sh
-RESET_DATA=1 \
-REQUIRE_CLOSE_SUCCESS=1 \
 python3 src/uniffi_api/examples/python-interop/manual_py_virtual_channels_sdk.py
 ```
 

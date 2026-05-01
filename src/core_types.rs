@@ -1,4 +1,6 @@
+use crate::signer::{BootstrapData, ExternalSignerAttachment};
 use lightning::impl_writeable_tlv_based_enum;
+use rgb_lib::bdk_wallet::keys::bip39::Mnemonic;
 use serde::{Deserialize, Serialize};
 
 pub(crate) const FEE_RATE: u64 = 7;
@@ -69,4 +71,17 @@ pub(crate) struct UnlockRequest {
     pub(crate) proxy_endpoint: Option<String>,
     pub(crate) announce_addresses: Vec<String>,
     pub(crate) announce_alias: Option<String>,
+}
+
+#[derive(Clone)]
+pub(crate) struct ExternalKeySource {
+    pub(crate) bootstrap: BootstrapData,
+    pub(crate) signer_attachment: ExternalSignerAttachment,
+}
+
+#[derive(Clone)]
+pub(crate) enum NodeKeySource {
+    InternalMnemonic(Mnemonic),
+    #[allow(dead_code)]
+    External(ExternalKeySource),
 }

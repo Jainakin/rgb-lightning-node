@@ -142,10 +142,13 @@ pub(crate) fn map_api_error(err: APIError) -> RlnError {
         | APIError::NoAvailableUtxos
         | APIError::NoRoute
         | APIError::DuplicatePayment(_)
+        | APIError::ExternalSignerRequired
+        | APIError::ExternalSignerMismatch
         | APIError::RecipientIDAlreadyUsed
         | APIError::TemporaryChannelIdAlreadyUsed
         | APIError::UnsupportedLayer1(_)
         | APIError::UnsupportedTransportType
+        | APIError::UnsupportedInExternalSignerMode(_)
         | APIError::CannotFailBatchTransfer => RlnError::Conflict,
         APIError::AnchorsRequired
         | APIError::ExpiredSwapOffer
@@ -192,8 +195,14 @@ pub(crate) fn map_api_error(err: APIError) -> RlnError {
         | APIError::OutputBelowDustLimit
         | APIError::WrongPassword
         | APIError::UnsupportedBackupVersion { .. } => RlnError::InvalidRequest,
-        APIError::Network(_) | APIError::NoValidTransportEndpoint => RlnError::Conflict,
-        _ => RlnError::Internal,
+        APIError::Network(_)
+        | APIError::NoValidTransportEndpoint
+        | APIError::ExternalSignerUnavailable(_)
+        | APIError::ExternalSignerProtocolError(_) => RlnError::Conflict,
+        other => {
+            tracing::error!("UniFFI API error mapped to internal: {:?}", other);
+            RlnError::Internal
+        }
     }
 }
 
@@ -202,6 +211,9 @@ pub(super) fn map_app_error(err: AppError) -> RlnError {
         AppError::UnavailablePort(_) | AppError::InvalidAuthenticationArgs => {
             RlnError::InvalidRequest
         }
-        _ => RlnError::Internal,
+        other => {
+            tracing::error!("UniFFI app error mapped to internal: {:?}", other);
+            RlnError::Internal
+        }
     }
 }

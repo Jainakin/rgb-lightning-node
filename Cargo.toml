@@ -11,6 +11,7 @@ crate-type = ["lib", "staticlib", "cdylib"]
 [features]
 default = []
 test-utils = []
+vls = []
 
 [dependencies]
 amplify = { version = "=4.8.1", default-features = false }
@@ -47,6 +48,8 @@ rgb-lib = { git = "https://github.com/UTEXO-Protocol/rgb-lib.git", branch = "dev
     "esplora",
 ] }
 rln-migration = { path = "migration" }
+signer-contract = { git = "https://github.com/rmn-boiko/rln-external-signer.git", branch = "main" }
+signer-vls-adapter = { git = "https://github.com/rmn-boiko/rln-external-signer.git", branch = "main", default-features = false, features = ["with-vls"] }
 sea-orm = { version = "1.1.19", default-features = false, features = [
     "macros",
     "runtime-tokio-rustls",
@@ -56,6 +59,7 @@ sea-orm = { version = "1.1.19", default-features = false, features = [
 scrypt = "0.11.0"
 serde = { version = "^1.0", features = ["derive"] }
 serde_json = "1.0"
+prost = "0.13"
 tempfile = "3.14.0"
 thiserror = "2.0"
 time = { version = "0.3.36", features = ["std"] }
@@ -67,6 +71,10 @@ tracing-appender = "0.2.3"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 typenum = "1.17.0"
 uuid = { version = "1.11.0", default-features = false, features = ["v4"] }
+vls-protocol = "0.14.0"
+vls-protocol-client = "0.14.0"
+vls-protocol-signer = "0.14.0"
+lightning-signer = { package = "vls-core", version = "0.14.0" }
 walkdir = "2.5.0"
 uniffi = { version = "0.28.3", features = ["build"], optional = true }
 zip = { version = "2.2.0", default-features = false, features = ["time", "zstd"] }

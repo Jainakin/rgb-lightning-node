@@ -1,4 +1,8 @@
 use crate::kv_store::SeaOrmKvStore;
+use crate::rgb_kv_store::{
+    get_rgb_channel_info_pending, is_channel_rgb, update_rgb_channel_amount, RgbKvStoreExt,
+    RGB_PAYMENT_INFO_INBOUND_NS, RGB_PAYMENT_INFO_OUTBOUND_NS, RGB_PRIMARY_NS,
+};
 use amplify::{map, s};
 use bitcoin::blockdata::locktime::absolute::LockTime;
 use bitcoin::hashes::{sha256, Hash as BitcoinHash};
@@ -14,9 +18,7 @@ use lightning::events::bump_transaction::{BumpTransactionEventHandler, Wallet};
 use lightning::events::{Event, PaymentFailureReason, PaymentPurpose, ReplayEvent};
 use lightning::ln::channel_state::ChannelDetails;
 use lightning::ln::channelmanager::{self, ChannelFundingType, PaymentId, RecentPaymentDetails};
-use lightning::ln::channelmanager::{
-    ChainParameters, ChannelManagerReadArgs, SimpleArcChannelManager,
-};
+use lightning::ln::channelmanager::{ChainParameters, ChannelManagerReadArgs};
 use lightning::ln::msgs::SocketAddress;
 use lightning::ln::peer_handler::{
     IgnoringMessageHandler, MessageHandler, PeerManager as LdkPeerManager,
@@ -25,19 +27,12 @@ use lightning::ln::types::ChannelId;
 use lightning::onion_message::messenger::{
     DefaultMessageRouter, OnionMessenger as LdkOnionMessenger,
 };
-use lightning::rgb_utils::{
-    get_rgb_channel_info_pending, is_channel_rgb, update_rgb_channel_amount, RgbKvStoreExt,
-    RgbPaymentInfo, RGB_PAYMENT_INFO_INBOUND_NS, RGB_PAYMENT_INFO_OUTBOUND_NS, RGB_PRIMARY_NS,
-    STATIC_BLINDING,
-};
+use lightning::rgb_utils::{RgbPaymentInfo, STATIC_BLINDING};
 use lightning::routing::gossip;
 use lightning::routing::gossip::{NodeId, P2PGossipSync};
 use lightning::routing::router::DefaultRouter;
 use lightning::routing::scoring::{ProbabilisticScorer, ProbabilisticScoringFeeParameters};
-use lightning::sign::{
-    EntropySource, InMemorySigner, KeysManager, NodeSigner, OutputSpender,
-    SpendableOutputDescriptor,
-};
+use lightning::sign::{KeysManager, NodeSigner, OutputSpender, SpendableOutputDescriptor};
 use lightning::types::payment::{PaymentHash, PaymentPreimage};
 use lightning::util::config::UserConfig;
 use lightning::util::hash_tables::hash_map::Entry;
@@ -62,7 +57,7 @@ use lightning_invoice::PaymentSecret;
 use lightning_net_tokio::SocketDescriptor;
 use rand::RngCore;
 use rgb_lib::{
-    bdk_wallet::keys::{bip39::Mnemonic, DerivableKey, ExtendedKey},
+    bdk_wallet::keys::{DerivableKey, ExtendedKey},
     bitcoin::{
         bip32::{ChildNumber, Xpriv},
         psbt::Psbt as RgbLibPsbt,
@@ -96,7 +91,8 @@ use tokio::task::JoinHandle;
 
 use crate::bitcoind::BitcoindClient;
 use crate::core_types::{
-    HTLCStatus, SwapStatus, UnlockRequest, DUST_LIMIT_MSAT, FEE_RATE, MIN_CHANNEL_CONFIRMATIONS,
+    HTLCStatus, NodeKeySource, SwapStatus, UnlockRequest, DUST_LIMIT_MSAT, FEE_RATE,
+    MIN_CHANNEL_CONFIRMATIONS,
 };
 use crate::database::RlnDatabase;
 use crate::disk::{self, FilesystemLogger};
@@ -118,6 +114,14 @@ const VIRTUAL_CHANNEL_DRAFTS_KEY: &str = "virtual_channel_drafts";
 const VIRTUAL_CHANNEL_SESSIONS_KEY: &str = "virtual_channel_sessions";
 use crate::error::APIError;
 use crate::rgb::{check_rgb_proxy_endpoint, get_rgb_channel_info_optional, RgbLibWalletWrapper};
+use crate::signer::{
+    read_key_source_file, validate_key_source_matches_bootstrap, ExternalSigner,
+    ExternalSignerAttachment, ExternalSignerTransport, SUPPORTED_SIGNER_API_LEVEL,
+};
+use crate::signer::{
+    ActiveSignerRef, DynRlnChannelSigner, DynRlnSigner, LightningEntropySource, RlnKeysInterface,
+    SystemEntropySource,
+};
 use crate::swap::SwapData;
 use crate::utils::{
     check_port_is_available, connect_peer_if_necessary, do_connect_peer, get_current_timestamp,
@@ -710,7 +714,7 @@ impl UnlockedAppState {
             loop {
                 let mut tmp_channel_id_bytes = [0u8; 32];
                 tmp_channel_id_bytes
-                    .copy_from_slice(&self.keys_manager.get_secure_random_bytes()[..32]);
+                    .copy_from_slice(&self.entropy_source.get_secure_random_bytes()[..32]);
                 let candidate = ChannelId::from_bytes(tmp_channel_id_bytes);
                 if !channel_ids.contains_key(&candidate) && !drafts.entries.contains_key(&candidate)
                 {
@@ -882,7 +886,7 @@ impl UnlockedAppState {
 }
 
 pub(crate) type ChainMonitor = chainmonitor::ChainMonitor<
-    InMemorySigner,
+    DynRlnChannelSigner,
     Arc<dyn Filter + Send + Sync>,
     Arc<BitcoindClient>,
     Arc<BitcoindClient>,
@@ -891,13 +895,13 @@ pub(crate) type ChainMonitor = chainmonitor::ChainMonitor<
         MonitorUpdatingPersister<
             Arc<SeaOrmKvStore>,
             Arc<FilesystemLogger>,
-            Arc<KeysManager>,
-            Arc<KeysManager>,
+            ActiveSignerRef,
+            ActiveSignerRef,
             Arc<BitcoindClient>,
             Arc<BitcoindClient>,
         >,
     >,
-    Arc<KeysManager>,
+    ActiveSignerRef,
 >;
 
 pub(crate) type GossipVerifier = lightning_block_sync::gossip::GossipVerifier<
@@ -913,7 +917,7 @@ pub(crate) type PeerManager = LdkPeerManager<
     Arc<OnionMessenger>,
     Arc<FilesystemLogger>,
     IgnoringMessageHandler,
-    Arc<KeysManager>,
+    ActiveSignerRef,
     Arc<ChainMonitor>,
 >;
 
@@ -922,23 +926,36 @@ pub(crate) type Scorer = ProbabilisticScorer<Arc<NetworkGraph>, Arc<FilesystemLo
 pub(crate) type Router = DefaultRouter<
     Arc<NetworkGraph>,
     Arc<FilesystemLogger>,
-    Arc<KeysManager>,
+    Arc<LightningEntropySource>,
     Arc<RwLock<Scorer>>,
     ProbabilisticScoringFeeParameters,
     Scorer,
 >;
 
-pub(crate) type ChannelManager =
-    SimpleArcChannelManager<ChainMonitor, BitcoindClient, BitcoindClient, FilesystemLogger>;
+pub(crate) type ChannelManager = channelmanager::ChannelManager<
+    Arc<ChainMonitor>,
+    Arc<BitcoindClient>,
+    Arc<LightningEntropySource>,
+    ActiveSignerRef,
+    ActiveSignerRef,
+    Arc<BitcoindClient>,
+    Arc<Router>,
+    Arc<
+        DefaultMessageRouter<Arc<NetworkGraph>, Arc<FilesystemLogger>, Arc<LightningEntropySource>>,
+    >,
+    Arc<FilesystemLogger>,
+>;
 
 pub(crate) type NetworkGraph = gossip::NetworkGraph<Arc<FilesystemLogger>>;
 
 pub(crate) type OnionMessenger = LdkOnionMessenger<
-    Arc<KeysManager>,
-    Arc<KeysManager>,
+    Arc<LightningEntropySource>,
+    ActiveSignerRef,
     Arc<FilesystemLogger>,
     Arc<ChannelManager>,
-    Arc<DefaultMessageRouter<Arc<NetworkGraph>, Arc<FilesystemLogger>, Arc<KeysManager>>>,
+    Arc<
+        DefaultMessageRouter<Arc<NetworkGraph>, Arc<FilesystemLogger>, Arc<LightningEntropySource>>,
+    >,
     Arc<ChannelManager>,
     Arc<ChannelManager>,
     Arc<OMDomainResolver<Arc<ChannelManager>>>,
@@ -948,7 +965,7 @@ pub(crate) type OnionMessenger = LdkOnionMessenger<
 pub(crate) type BumpTxEventHandler = BumpTransactionEventHandler<
     Arc<BitcoindClient>,
     Arc<Wallet<Arc<RgbLibWalletWrapper>, Arc<FilesystemLogger>>>,
-    Arc<KeysManager>,
+    ActiveSignerRef,
     Arc<FilesystemLogger>,
 >;
 
@@ -957,7 +974,7 @@ pub(crate) type OutputSpenderTxes = LdkHashMap<u64, bitcoin::Transaction>;
 pub(crate) struct RgbOutputSpender {
     static_state: Arc<StaticState>,
     rgb_wallet_wrapper: Arc<RgbLibWalletWrapper>,
-    keys_manager: Arc<KeysManager>,
+    signer: Arc<dyn RlnKeysInterface<EcdsaSigner = DynRlnChannelSigner>>,
     kv_store: Arc<SeaOrmKvStore>,
     txes: Arc<Mutex<OutputSpenderTxes>>,
     proxy_endpoint: String,
@@ -1183,12 +1200,11 @@ async fn handle_ldk_events(
                     );
                     let channel_rgb_amount = rgb_info.local_rgb_amount;
                     let asset_id = rgb_info.contract_id.to_string();
-                    let assignment = match rgb_info.schema {
-                        AssetSchema::Nia | AssetSchema::Cfa => {
-                            Assignment::Fungible(channel_rgb_amount)
-                        }
-                        AssetSchema::Uda => Assignment::NonFungible,
-                        AssetSchema::Ifa => todo!(),
+                    let assignment = match format!("{:?}", rgb_info.schema).as_str() {
+                        "Nia" | "Cfa" => Assignment::Fungible(channel_rgb_amount),
+                        "Uda" => Assignment::NonFungible,
+                        "Ifa" => todo!(),
+                        _ => Assignment::Fungible(channel_rgb_amount),
                     };
                     let recipient_id =
                         recipient_id_from_script_buf(script_buf, static_state.network);
@@ -1390,11 +1406,10 @@ async fn handle_ldk_events(
 
                 let channel_rgb_amount = rgb_info.local_rgb_amount + rgb_info.remote_rgb_amount;
                 let asset_id = rgb_info.contract_id.to_string();
-                let assignment = match rgb_info.schema {
-                    AssetSchema::Nia | AssetSchema::Cfa | AssetSchema::Ifa => {
-                        Assignment::Fungible(channel_rgb_amount)
-                    }
-                    AssetSchema::Uda => Assignment::NonFungible,
+                let assignment = match format!("{:?}", rgb_info.schema).as_str() {
+                    "Nia" | "Cfa" | "Ifa" => Assignment::Fungible(channel_rgb_amount),
+                    "Uda" => Assignment::NonFungible,
+                    _ => Assignment::Fungible(channel_rgb_amount),
                 };
 
                 let recipient_id = recipient_id_from_script_buf(script_buf, static_state.network);
@@ -1451,7 +1466,13 @@ async fn handle_ldk_events(
                 (unsigned_psbt, None)
             };
 
-            let signed_psbt = unlocked_state.rgb_sign_psbt(unsigned_psbt).unwrap();
+            let signed_psbt = match unlocked_state.rgb_sign_psbt(unsigned_psbt) {
+                Ok(psbt) => psbt,
+                Err(e) => {
+                    tracing::error!("failed to sign channel funding PSBT: {e}");
+                    return Err(ReplayEvent());
+                }
+            };
             let psbt = Psbt::from_str(&signed_psbt).unwrap();
 
             let funding_tx = psbt.clone().extract_tx().unwrap();
@@ -1516,16 +1537,15 @@ async fn handle_ldk_events(
             let channel_manager_copy = unlocked_state.channel_manager.clone();
 
             // Give the funding transaction back to LDK for opening the channel.
-            if channel_manager_copy
-                .funding_transaction_generated(
-                    temporary_channel_id,
-                    counterparty_node_id,
-                    funding_tx,
-                )
-                .is_err()
-            {
+            if let Err(e) = channel_manager_copy.funding_transaction_generated(
+                temporary_channel_id,
+                counterparty_node_id,
+                funding_tx,
+            ) {
                 tracing::error!(
-                        "ERROR: Channel went away before we could fund it. The peer disconnected or refused the channel.");
+                    "ERROR: Channel went away before we could fund it. The peer disconnected or refused the channel: {:?}",
+                    e
+                );
                 *unlocked_state.rgb_send_lock.lock().unwrap() = false;
             }
         }
@@ -1793,7 +1813,7 @@ async fn handle_ldk_events(
         } => {
             let mut random_bytes = [0u8; 16];
             random_bytes
-                .copy_from_slice(&unlocked_state.keys_manager.get_secure_random_bytes()[..16]);
+                .copy_from_slice(&unlocked_state.entropy_source.get_secure_random_bytes()[..16]);
             let user_channel_id = u128::from_be_bytes(random_bytes);
 
             let (res, accepted) = if static_state.enable_virtual_channels_v0 {
@@ -2137,7 +2157,7 @@ async fn handle_ldk_events(
                     let consignment =
                         RgbTransfer::load(&mut std::io::Cursor::new(consignment_data))
                             .expect("successful consignment load");
-                    unlocked_state
+                    let _ = unlocked_state
                         .kv_store
                         .remove_rgb_consignment(&funding_txid);
 
@@ -2451,14 +2471,17 @@ impl OutputSpender for RgbOutputSpender {
                 .kv_store
                 .read(
                     RGB_PRIMARY_NS,
-                    lightning::rgb_utils::RGB_TRANSFER_INFO_NS,
+                    crate::rgb_kv_store::RGB_TRANSFER_INFO_NS,
                     &txid_str,
                 )
                 .is_ok();
             if !transfer_info_exists {
                 continue;
             }
-            let transfer_info = self.kv_store.read_rgb_transfer_info(&txid_str);
+            let transfer_info = match self.kv_store.read_rgb_transfer_info(&txid_str) {
+                Ok(info) => info,
+                Err(_) => continue,
+            };
             if transfer_info.rgb_amount == 0 {
                 continue;
             }
@@ -2522,7 +2545,7 @@ impl OutputSpender for RgbOutputSpender {
         }
 
         if vanilla_descriptor {
-            return self.keys_manager.spend_spendable_outputs(
+            return self.signer.spend_spendable_outputs(
                 descriptors.as_ref(),
                 txouts,
                 change_destination_script,
@@ -2570,7 +2593,7 @@ impl OutputSpender for RgbOutputSpender {
         let mut psbt = Psbt::from_str(&psbt.to_string()).expect("valid transaction");
 
         psbt = self
-            .keys_manager
+            .signer
             .sign_spendable_outputs_psbt(descriptors, psbt, secp_ctx)
             .unwrap();
 
@@ -2631,18 +2654,52 @@ impl OutputSpender for RgbOutputSpender {
 
 pub(crate) async fn start_ldk(
     app_state: Arc<AppState>,
-    mnemonic: Mnemonic,
+    key_source: NodeKeySource,
     unlock_request: UnlockRequest,
 ) -> Result<(LdkBackgroundServices, Arc<UnlockedAppState>), APIError> {
     let static_state = &app_state.static_state;
+    let (
+        internal_mnemonic,
+        external_signer_mode,
+        external_bootstrap,
+        external_signer,
+        external_node_id,
+    ) = match key_source {
+        NodeKeySource::InternalMnemonic(mnemonic) => (Some(mnemonic), false, None, None, None),
+        NodeKeySource::External(external) => {
+            let signer = ExternalSigner::from_attachment(&external.signer_attachment);
+            let bootstrap = external.signer_attachment.bootstrap.clone();
+            if bootstrap.api_level != SUPPORTED_SIGNER_API_LEVEL {
+                return Err(APIError::ExternalSignerProtocolError(format!(
+                    "unsupported external signer api_level {}, expected {}",
+                    bootstrap.api_level, SUPPORTED_SIGNER_API_LEVEL
+                )));
+            }
+
+            let key_source = read_key_source_file(&static_state.storage_dir_path)
+                .map_err(|e| APIError::ExternalSignerProtocolError(e.to_string()))?
+                .ok_or(APIError::NotInitialized)?;
+            validate_key_source_matches_bootstrap(&key_source, &bootstrap)
+                .map_err(|_| APIError::ExternalSignerMismatch)?;
+
+            if bootstrap != external.bootstrap {
+                return Err(APIError::ExternalSignerMismatch);
+            }
+            let external_node_id = Some(bootstrap.identity.node_id.clone());
+            (
+                None,
+                true,
+                Some(bootstrap),
+                Some(Arc::new(signer)),
+                external_node_id,
+            )
+        }
+    };
 
     // Initialize Persistence using shared database connection
     let kv_store = Arc::new(SeaOrmKvStore::from_connection(Arc::clone(
         &static_state.database,
     )));
-    let kv_store_dyn: Arc<dyn KVStoreSync + Send + Sync> =
-        Arc::clone(&kv_store) as Arc<dyn KVStoreSync + Send + Sync>;
-
     // Sync config from database to KVStore
     sync_config_to_kvstore(&static_state.database, kv_store.as_ref())?;
 
@@ -2747,29 +2804,42 @@ pub(crate) async fn start_ldk(
     // Initialize the KeysManager
     // The key seed that we use to derive the node privkey (that corresponds to the node pubkey) and
     // other secret key material.
-    let xkey: ExtendedKey = mnemonic
-        .clone()
-        .into_extended_key()
-        .expect("a valid key should have been provided");
-    let master_xprv = &xkey
-        .into_xprv(network)
-        .expect("should be possible to get an extended private key");
-    let xprv: Xpriv = master_xprv
-        .derive_priv(&Secp256k1_30::new(), &ChildNumber::Hardened { index: 535 })
-        .unwrap();
-    let ldk_seed: [u8; 32] = xprv.private_key.secret_bytes();
+    let ldk_seed: [u8; 32] = if let Some(mnemonic) = internal_mnemonic.clone() {
+        let xkey: ExtendedKey = mnemonic
+            .into_extended_key()
+            .expect("a valid key should have been provided");
+        let master_xprv = &xkey
+            .into_xprv(network)
+            .expect("should be possible to get an extended private key");
+        let xprv: Xpriv = master_xprv
+            .derive_priv(&Secp256k1_30::new(), &ChildNumber::Hardened { index: 535 })
+            .unwrap();
+        xprv.private_key.secret_bytes()
+    } else {
+        let bootstrap = external_bootstrap
+            .as_ref()
+            .expect("external bootstrap must be present in external mode");
+        derive_ldk_seed_from_bootstrap(bootstrap)
+    };
     let cur = SystemTime::now()
         .duration_since(SystemTime::UNIX_EPOCH)
         .unwrap();
 
-    let keys_manager = Arc::new(KeysManager::new(
+    let internal_keys_manager = Arc::new(KeysManager::new(
         &ldk_seed,
         cur.as_secs(),
         cur.subsec_nanos(),
         true,
         ldk_data_dir_path.clone(),
-        kv_store_dyn.clone(),
     ));
+    let keys_manager: ActiveSignerRef = match &external_signer {
+        Some(s) => Arc::new(DynRlnSigner::from_external(Arc::clone(s))),
+        None => Arc::new(DynRlnSigner::from_internal(Arc::clone(
+            &internal_keys_manager,
+        ))),
+    };
+    let entropy_source: Arc<dyn crate::signer::RlnEntropySource> = Arc::new(SystemEntropySource);
+    let ldk_entropy_source = Arc::new(LightningEntropySource::new(Arc::clone(&entropy_source)));
 
     let persister = Arc::new(MonitorUpdatingPersister::new(
         Arc::clone(&kv_store),
@@ -2820,13 +2890,13 @@ pub(crate) async fn start_ldk(
     let router = Arc::new(DefaultRouter::new(
         network_graph.clone(),
         logger.clone(),
-        keys_manager.clone(),
+        ldk_entropy_source.clone(),
         scorer.clone(),
         scoring_fee_params,
     ));
     let message_router = Arc::new(DefaultMessageRouter::new(
         Arc::clone(&network_graph),
-        Arc::clone(&keys_manager),
+        Arc::clone(&ldk_entropy_source),
     ));
 
     // Initialize the ChannelManager
@@ -2852,7 +2922,7 @@ pub(crate) async fn start_ldk(
                     channel_monitor_references.push(channel_monitor);
                 }
                 let read_args = ChannelManagerReadArgs::new(
-                    keys_manager.clone(),
+                    ldk_entropy_source.clone(),
                     keys_manager.clone(),
                     keys_manager.clone(),
                     fee_estimator.clone(),
@@ -2864,7 +2934,6 @@ pub(crate) async fn start_ldk(
                     user_config,
                     channel_monitor_references,
                     ldk_data_dir_path.clone(),
-                    Arc::clone(&kv_store) as Arc<dyn KVStoreSync + Send + Sync>,
                 );
                 <(BlockHash, ChannelManager)>::read(&mut &bytes[..], read_args).unwrap()
             }
@@ -2885,14 +2954,13 @@ pub(crate) async fn start_ldk(
                     router.clone(),
                     Arc::clone(&message_router),
                     logger.clone(),
-                    keys_manager.clone(),
+                    ldk_entropy_source.clone(),
                     keys_manager.clone(),
                     keys_manager.clone(),
                     user_config,
                     chain_params,
                     cur.as_secs() as u32,
                     ldk_data_dir_path.clone(),
-                    Arc::clone(&kv_store) as Arc<dyn KVStoreSync + Send + Sync>,
                 );
                 (polled_best_block_hash, fresh_channel_manager)
             }
@@ -2903,22 +2971,50 @@ pub(crate) async fn start_ldk(
     };
 
     // Prepare the RGB wallet
-    let mnemonic_str = mnemonic.to_string();
-    let (_, account_xpub_vanilla, _) =
-        get_account_data(&bitcoin_network, &mnemonic_str, false).unwrap();
-    let (_, account_xpub_colored, master_fingerprint) =
-        get_account_data(&bitcoin_network, &mnemonic_str, true).unwrap();
+    let (account_xpub_vanilla, account_xpub_colored, master_fingerprint, rgb_wallet_mnemonic) =
+        if external_signer_mode {
+            let bootstrap = external_bootstrap.clone().ok_or_else(|| {
+                APIError::ExternalSignerProtocolError(
+                    "missing external bootstrap in external mode".to_string(),
+                )
+            })?;
+            (
+                bootstrap.identity.account_xpub_vanilla,
+                bootstrap.identity.account_xpub_colored,
+                bootstrap.identity.master_fingerprint,
+                None,
+            )
+        } else {
+            let mnemonic_str = internal_mnemonic
+                .as_ref()
+                .ok_or_else(|| {
+                    APIError::ExternalSignerProtocolError(
+                        "missing internal mnemonic in internal mode".to_string(),
+                    )
+                })?
+                .to_string();
+            let (_, account_xpub_vanilla, _) =
+                get_account_data(&bitcoin_network, &mnemonic_str, false).unwrap();
+            let (_, account_xpub_colored, master_fingerprint) =
+                get_account_data(&bitcoin_network, &mnemonic_str, true).unwrap();
+            (
+                account_xpub_vanilla.to_string(),
+                account_xpub_colored.to_string(),
+                master_fingerprint.to_string(),
+                Some(mnemonic_str.clone()),
+            )
+        };
     let data_dir = static_state
         .storage_dir_path
         .clone()
         .to_string_lossy()
         .to_string();
     let keys = SinglesigKeys {
-        account_xpub_vanilla: account_xpub_vanilla.to_string(),
-        account_xpub_colored: account_xpub_colored.to_string(),
+        account_xpub_vanilla: account_xpub_vanilla.clone(),
+        account_xpub_colored: account_xpub_colored.clone(),
         vanilla_keychain: None,
-        master_fingerprint: master_fingerprint.to_string(),
-        mnemonic: Some(mnemonic.to_string()),
+        master_fingerprint: master_fingerprint.clone(),
+        mnemonic: rgb_wallet_mnemonic,
     };
     let mut rgb_wallet = tokio::task::spawn_blocking(move || {
         RgbLibWallet::new(
@@ -2946,25 +3042,25 @@ pub(crate) async fn start_ldk(
         &static_state.database,
         kv_store.as_ref(),
         CONFIG_WALLET_FINGERPRINT,
-        &account_xpub_colored.fingerprint().to_string(),
+        &master_fingerprint,
     )?;
     save_config(
         &static_state.database,
         kv_store.as_ref(),
         CONFIG_WALLET_ACCOUNT_XPUB_COLORED,
-        &account_xpub_colored.to_string(),
+        &account_xpub_colored,
     )?;
     save_config(
         &static_state.database,
         kv_store.as_ref(),
         CONFIG_WALLET_ACCOUNT_XPUB_VANILLA,
-        &account_xpub_vanilla.to_string(),
+        &account_xpub_vanilla,
     )?;
     save_config(
         &static_state.database,
         kv_store.as_ref(),
         CONFIG_WALLET_MASTER_FINGERPRINT,
-        &master_fingerprint.to_string(),
+        &master_fingerprint,
     )?;
 
     let rgb_wallet_wrapper = Arc::new(RgbLibWalletWrapper::new(
@@ -2979,10 +3075,12 @@ pub(crate) async fn start_ldk(
         Err(e) => panic!("Failed to read output spender txes from KVStore: {e}"),
     };
     let txes = Arc::new(Mutex::new(txes));
+    let signer_for_output_spender: Arc<dyn RlnKeysInterface<EcdsaSigner = DynRlnChannelSigner>> =
+        keys_manager.clone();
     let rgb_output_spender = Arc::new(RgbOutputSpender {
         static_state: static_state.clone(),
         rgb_wallet_wrapper: rgb_wallet_wrapper.clone(),
-        keys_manager: keys_manager.clone(),
+        signer: signer_for_output_spender,
         kv_store: kv_store.clone(),
         txes,
         proxy_endpoint: proxy_endpoint.to_string(),
@@ -3115,7 +3213,7 @@ pub(crate) async fn start_ldk(
 
     // Initialize the PeerManager
     let onion_messenger: Arc<OnionMessenger> = Arc::new(LdkOnionMessenger::new(
-        Arc::clone(&keys_manager),
+        Arc::clone(&ldk_entropy_source),
         Arc::clone(&keys_manager),
         Arc::clone(&logger),
         Arc::clone(&channel_manager),
@@ -3325,7 +3423,8 @@ pub(crate) async fn start_ldk(
     let unlocked_state = Arc::new(UnlockedAppState {
         channel_manager: Arc::clone(&channel_manager),
         inbound_payments,
-        keys_manager,
+        signer: keys_manager,
+        entropy_source,
         network_graph,
         chain_monitor: chain_monitor.clone(),
         onion_messenger: onion_messenger.clone(),
@@ -3341,6 +3440,9 @@ pub(crate) async fn start_ldk(
         rgb_send_lock: Arc::new(Mutex::new(false)),
         channel_ids_map,
         proxy_endpoint: proxy_endpoint.to_string(),
+        external_signer_mode,
+        external_signer,
+        external_node_id,
         virtual_channel_draft_store,
         virtual_channel_session_store,
     });
@@ -3507,6 +3609,35 @@ pub(crate) async fn start_ldk(
     ))
 }
 
+#[allow(dead_code)]
+pub(crate) fn attach_external_signer_transport(
+    transport: Arc<dyn ExternalSignerTransport>,
+) -> Result<ExternalSignerAttachment, APIError> {
+    let signer = ExternalSigner::with_vls_adapter(Arc::clone(&transport));
+    let bootstrap = signer.bootstrap().map_err(|e| match e {
+        crate::signer::RlnSignerError::Transport(msg) => APIError::ExternalSignerUnavailable(msg),
+        crate::signer::RlnSignerError::Protocol(msg)
+        | crate::signer::RlnSignerError::Unsupported(msg) => {
+            APIError::ExternalSignerProtocolError(msg)
+        }
+    })?;
+    Ok(ExternalSignerAttachment {
+        bootstrap,
+        transport,
+    })
+}
+
+fn derive_ldk_seed_from_bootstrap(bootstrap: &crate::signer::BootstrapData) -> [u8; 32] {
+    let mut seed_material = Vec::new();
+    seed_material.extend_from_slice(bootstrap.identity.node_id.as_bytes());
+    seed_material.extend_from_slice(bootstrap.identity.account_xpub_vanilla.as_bytes());
+    seed_material.extend_from_slice(bootstrap.identity.account_xpub_colored.as_bytes());
+    seed_material.extend_from_slice(bootstrap.identity.master_fingerprint.as_bytes());
+    seed_material.extend_from_slice(bootstrap.protocol_version.as_bytes());
+
+    <sha256::Hash as bitcoin::hashes::Hash>::hash(&seed_material).to_byte_array()
+}
+
 impl AppState {
     fn stop_ldk(&self) -> Option<JoinHandle<Result<(), io::Error>>> {
         let mut ldk_background_services = self.get_ldk_background_services();
@@ -3582,8 +3713,7 @@ pub(crate) fn clear_rgb_payment_pending(payment_hash: &PaymentHash, kv_store: &d
 mod tests {
     use super::*;
     use crate::kv_store::SeaOrmKvStore;
-    use lightning::rgb_utils::{RgbInfo, RGB_CHANNEL_INFO_NS};
-    use rgb_lib::AssetSchema;
+    use lightning::rgb_utils::RgbInfo;
     use rln_migration::{Migrator, MigratorTrait};
     use sea_orm::{ConnectOptions, Database};
     use std::str::FromStr;
@@ -3611,14 +3741,11 @@ mod tests {
     ) {
         let info = RgbInfo {
             contract_id: test_contract_id(),
-            schema: AssetSchema::Nia,
+            schema: serde_json::from_str("\"Nia\"").expect("valid schema"),
             local_rgb_amount,
             remote_rgb_amount,
         };
-        let data = bincode::serialize(&info).expect("serialize rgb info");
-        kv_store
-            .write(RGB_PRIMARY_NS, RGB_CHANNEL_INFO_NS, channel_id, data)
-            .expect("write rgb channel info");
+        kv_store.write_rgb_channel_info(channel_id, &info, false);
     }
 
     fn seed_pending_payment_key(
@@ -3646,10 +3773,9 @@ mod tests {
     }
 
     fn read_local_amount(kv_store: &Arc<dyn KVStoreSync + Send + Sync>, channel_id: &str) -> u64 {
-        let data = kv_store
-            .read(RGB_PRIMARY_NS, RGB_CHANNEL_INFO_NS, channel_id)
+        let info = kv_store
+            .read_rgb_channel_info(channel_id, false)
             .expect("read rgb channel info");
-        let info: RgbInfo = bincode::deserialize(&data).expect("deserialize rgb info");
         info.local_rgb_amount
     }
 
