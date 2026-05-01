@@ -1380,6 +1380,7 @@ impl SdkNode {
 
 #[uniffi::export]
 impl SdkNode {
+    #[allow(clippy::too_many_arguments)]
     pub fn attach_external_signer(
         &self,
         host: Arc<dyn ExternalSignerHost>,
@@ -1406,25 +1407,7 @@ impl SdkNode {
         self.handle.app_state().set_attached_external_signer(None);
     }
 
-    #[cfg(feature = "vls")]
-    pub fn init_with_native_external_signer(
-        &self,
-        signer: Arc<NativeExternalSigner>,
-    ) -> Result<(), RlnError> {
-        self.init_with_external_signer(signer.bootstrap()?)
-    }
-
-    #[cfg(feature = "vls")]
-    pub fn attach_native_external_signer(
-        &self,
-        signer: Arc<NativeExternalSigner>,
-    ) -> Result<(), RlnError> {
-        let state = self.handle.app_state();
-        let expected = bootstrap_from_uniffi(signer.bootstrap()?);
-        let host: Arc<dyn ExternalSignerHost> = signer;
-        attach_host_with_expected_bootstrap(&state, host, expected)
-    }
-
+    #[allow(clippy::too_many_arguments)]
     pub fn unlock_with_attached_external_signer(
         &self,
         node_id: String,
@@ -1467,8 +1450,29 @@ impl SdkNode {
         ))?;
         Ok(())
     }
+}
 
-    #[cfg(feature = "vls")]
+#[cfg(feature = "vls")]
+#[uniffi::export]
+impl SdkNode {
+    pub fn init_with_native_external_signer(
+        &self,
+        signer: Arc<NativeExternalSigner>,
+    ) -> Result<(), RlnError> {
+        self.init_with_external_signer(signer.bootstrap()?)
+    }
+
+    pub fn attach_native_external_signer(
+        &self,
+        signer: Arc<NativeExternalSigner>,
+    ) -> Result<(), RlnError> {
+        let state = self.handle.app_state();
+        let expected = bootstrap_from_uniffi(signer.bootstrap()?);
+        let host: Arc<dyn ExternalSignerHost> = signer;
+        attach_host_with_expected_bootstrap(&state, host, expected)
+    }
+
+    #[allow(clippy::too_many_arguments)]
     pub fn unlock_with_native_external_signer(
         &self,
         signer: Arc<NativeExternalSigner>,

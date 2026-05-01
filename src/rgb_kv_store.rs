@@ -13,10 +13,12 @@ use rgb_lib::ContractId;
 
 pub(crate) const RGB_PRIMARY_NS: &str = "rgb";
 pub(crate) const RGB_CHANNEL_INFO_NS: &str = "channel_info";
+pub(crate) const RGB_CHANNEL_INFO_PENDING_NS: &str = "channel_info_pending";
 pub(crate) const RGB_PAYMENT_INFO_INBOUND_NS: &str = "payment_info_inbound";
 pub(crate) const RGB_PAYMENT_INFO_OUTBOUND_NS: &str = "payment_info_outbound";
 pub(crate) const RGB_TRANSFER_INFO_NS: &str = "transfer_info";
 pub(crate) const RGB_CONSIGNMENT_NS: &str = "consignment";
+pub(crate) const RGB_WALLET_CONFIG_NS: &str = "wallet_config";
 
 pub(crate) trait RgbKvStoreExt {
     fn write_config(&self, key: &str, value: &str);
@@ -39,16 +41,12 @@ pub(crate) trait RgbKvStoreExt {
     fn remove_rgb_consignment(&self, txid: &str) -> Result<(), io::Error>;
 }
 
-fn pending_suffix(pending: bool) -> &'static str {
+fn channel_namespace(pending: bool) -> &'static str {
     if pending {
-        "pending"
+        RGB_CHANNEL_INFO_PENDING_NS
     } else {
-        "final"
+        RGB_CHANNEL_INFO_NS
     }
-}
-
-fn channel_key(channel_id: &str, pending: bool) -> String {
-    format!("{channel_id}:{}", pending_suffix(pending))
 }
 
 fn payment_key(payment_hash: &PaymentHash, pending: bool) -> String {
@@ -62,29 +60,29 @@ fn payment_key(payment_hash: &PaymentHash, pending: bool) -> String {
 
 impl<T: KVStoreSync + ?Sized> RgbKvStoreExt for T {
     fn write_config(&self, key: &str, value: &str) {
-        let _ = self.write("", "", key, value.as_bytes().to_vec());
+        let _ = self.write(
+            RGB_PRIMARY_NS,
+            RGB_WALLET_CONFIG_NS,
+            key,
+            value.as_bytes().to_vec(),
+        );
     }
 
     fn read_rgb_channel_info(&self, channel_id: &str, pending: bool) -> Result<RgbInfo, io::Error> {
-        let key = channel_key(channel_id, pending);
-        let bytes = self.read(RGB_PRIMARY_NS, RGB_CHANNEL_INFO_NS, &key)?;
-        serde_json::from_slice(&bytes).map_err(|e| {
-            io::Error::new(
-                io::ErrorKind::InvalidData,
-                format!("invalid RGB channel info: {e}"),
-            )
-        })
+        let namespace = channel_namespace(pending);
+        let bytes = self.read(RGB_PRIMARY_NS, namespace, channel_id)?;
+        bincode::deserialize(&bytes).map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))
     }
 
     fn write_rgb_channel_info(&self, channel_id: &str, rgb_info: &RgbInfo, pending: bool) {
-        let key = channel_key(channel_id, pending);
-        let bytes = serde_json::to_vec(rgb_info).expect("valid RGB channel info");
-        let _ = self.write(RGB_PRIMARY_NS, RGB_CHANNEL_INFO_NS, &key, bytes);
+        let namespace = channel_namespace(pending);
+        let bytes = bincode::serialize(rgb_info).expect("valid RGB channel info");
+        let _ = self.write(RGB_PRIMARY_NS, namespace, channel_id, bytes);
     }
 
     fn remove_rgb_channel_info(&self, channel_id: &str, pending: bool) -> Result<(), io::Error> {
-        let key = channel_key(channel_id, pending);
-        self.remove(RGB_PRIMARY_NS, RGB_CHANNEL_INFO_NS, &key, false)
+        let namespace = channel_namespace(pending);
+        self.remove(RGB_PRIMARY_NS, namespace, channel_id, false)
     }
 
     fn read_rgb_payment_info(
@@ -99,12 +97,7 @@ impl<T: KVStoreSync + ?Sized> RgbKvStoreExt for T {
         };
         let key = payment_key(payment_hash, false);
         let bytes = self.read(RGB_PRIMARY_NS, ns, &key)?;
-        serde_json::from_slice(&bytes).map_err(|e| {
-            io::Error::new(
-                io::ErrorKind::InvalidData,
-                format!("invalid RGB payment info: {e}"),
-            )
-        })
+        bincode::deserialize(&bytes).map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))
     }
 
     fn write_rgb_payment_info(
@@ -119,23 +112,14 @@ impl<T: KVStoreSync + ?Sized> RgbKvStoreExt for T {
             RGB_PAYMENT_INFO_OUTBOUND_NS
         };
         let key = payment_key(payment_hash, pending);
-        let bytes = serde_json::to_vec(payment_info).map_err(|e| {
-            io::Error::new(
-                io::ErrorKind::InvalidData,
-                format!("invalid RGB payment info: {e}"),
-            )
-        })?;
+        let bytes = bincode::serialize(payment_info)
+            .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
         self.write(RGB_PRIMARY_NS, ns, &key, bytes)
     }
 
     fn read_rgb_transfer_info(&self, txid: &str) -> Result<TransferInfo, io::Error> {
         let bytes = self.read(RGB_PRIMARY_NS, RGB_TRANSFER_INFO_NS, txid)?;
-        serde_json::from_slice(&bytes).map_err(|e| {
-            io::Error::new(
-                io::ErrorKind::InvalidData,
-                format!("invalid RGB transfer info: {e}"),
-            )
-        })
+        bincode::deserialize(&bytes).map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))
     }
 
     fn read_rgb_consignment(&self, txid: &str) -> Result<Vec<u8>, io::Error> {

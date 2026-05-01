@@ -85,7 +85,7 @@ impl InProcessVlsTransport {
 impl Transport for InProcessVlsTransport {
     fn node_call(&self, message: Vec<u8>) -> Result<Vec<u8>, VlsClientError> {
         let msg_name = msgs::message_name_from_vec(&message);
-        let msg = msgs::from_vec(message).map_err(|e| VlsClientError::Protocol(e.into()))?;
+        let msg = msgs::from_vec(message).map_err(VlsClientError::Protocol)?;
         let mut state = self.state.lock().map_err(|_| VlsClientError::Transport)?;
 
         if state.root_handler.is_none() {
@@ -129,7 +129,7 @@ impl Transport for InProcessVlsTransport {
         message: Vec<u8>,
     ) -> Result<Vec<u8>, VlsClientError> {
         let msg_name = msgs::message_name_from_vec(&message);
-        let msg = msgs::from_vec(message).map_err(|e| VlsClientError::Protocol(e.into()))?;
+        let msg = msgs::from_vec(message).map_err(VlsClientError::Protocol)?;
         let mut state = self.state.lock().map_err(|_| VlsClientError::Transport)?;
         let root = state
             .root_handler

@@ -54,6 +54,10 @@ fn close_force_standard() {
             })
             .expect("node A issueassetnia")
             .asset_id;
+        assert_eq!(
+            wait_for_asset_balance(&node_a, &asset_id, Duration::from_secs(30)).spendable,
+            1_000
+        );
 
         let node_a_pubkey = node_a.node_info().expect("node A node_info").pubkey;
         let node_b_pubkey = node_b.node_info().expect("node B node_info").pubkey;

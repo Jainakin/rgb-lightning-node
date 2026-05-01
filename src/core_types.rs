@@ -80,6 +80,7 @@ pub(crate) struct ExternalKeySource {
 }
 
 #[derive(Clone)]
+#[allow(clippy::large_enum_variant)]
 pub(crate) enum NodeKeySource {
     InternalMnemonic(Mnemonic),
     #[allow(dead_code)]

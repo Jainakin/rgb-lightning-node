@@ -432,7 +432,7 @@ pub(crate) fn wait_for_usable_channel(
             Instant::now() < deadline,
             "timeout waiting for usable channel"
         );
-        if polls % 5 == 0 {
+        if polls.is_multiple_of(5) {
             mine(1);
         }
         sleep(Duration::from_secs(2));
@@ -549,7 +549,7 @@ pub(crate) fn wait_for_usable_channel_counts(nodes: &[(&SdkNode, usize)], timeou
             Instant::now() < deadline,
             "usable channel counts did not reach expected values in time"
         );
-        if polls % 5 == 0 {
+        if polls.is_multiple_of(5) {
             mine(1);
         }
         sleep(Duration::from_secs(1));
@@ -630,6 +630,8 @@ pub(crate) fn wait_for_balance(
 ) {
     let deadline = Instant::now() + timeout;
     loop {
+        node.sync()
+            .expect("node sync while waiting for spendable balance");
         let balance = asset_balance_spendable(node, asset_id);
         if balance == expected_balance {
             return;
@@ -823,7 +825,18 @@ pub(crate) fn close_channel_with_force(
             .iter()
             .any(|channel| channel.channel_id == channel_id)
         {
-            mine_blocks(true, if force { 144 } else { 6 });
+            if force {
+                // Force-close settlement needs the CSV delay to elapse before the sweep
+                // transaction is broadcast. Mine a short tail of extra blocks so the
+                // delayed sweep reliably gets confirmed before balance assertions run.
+                mine_blocks(true, 144);
+                for _ in 0..6 {
+                    sleep(Duration::from_secs(1));
+                    mine(1);
+                }
+            } else {
+                mine_blocks(true, 6);
+            }
             return;
         }
         assert!(Instant::now() < deadline, "channel did not close in time");

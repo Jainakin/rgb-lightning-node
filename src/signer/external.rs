@@ -191,7 +191,7 @@ impl NodeSigner for ExternalSigner {
         };
         let bytes = Vec::<u8>::from_hex(&shared_secret_hex).map_err(|_| ())?;
         let arr: [u8; 32] = bytes.try_into().map_err(|_| ())?;
-        Ok(SharedSecret::from_slice(&arr).map_err(|_| ())?)
+        SharedSecret::from_slice(&arr).map_err(|_| ())
     }
 
     fn sign_invoice(

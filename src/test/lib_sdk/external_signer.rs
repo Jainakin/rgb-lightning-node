@@ -6,7 +6,9 @@ use serial_test::serial;
 use std::fs;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
+#[cfg(feature = "vls")]
 use std::thread;
+#[cfg(feature = "vls")]
 use std::time::Duration;
 
 const NODE_ID_HEX: &str = "0279be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798";
@@ -209,6 +211,7 @@ fn test_bootstrap() -> SdkExternalSignerBootstrap {
     }
 }
 
+#[cfg(feature = "vls")]
 fn make_native_signer(seed_byte: u8) -> Arc<rgb_lightning_node::NativeExternalSigner> {
     rgb_lightning_node::NativeExternalSigner::new(
         format!("{seed_byte:02x}").repeat(32),
@@ -311,6 +314,7 @@ fn mock_response(req: &Value, bootstrap: &SdkExternalSignerBootstrap) -> Value {
     json!({"Node": {"RandomBytes": {"bytes_hex": "ab".repeat(32)}}})
 }
 
+#[cfg(feature = "vls")]
 #[test]
 #[serial]
 fn external_init_unlock_and_restart_same_signer() {
@@ -374,6 +378,7 @@ fn external_init_unlock_and_restart_same_signer() {
     }
 }
 
+#[cfg(feature = "vls")]
 #[test]
 #[serial]
 fn external_restart_with_mismatched_signer_fails_unlock() {

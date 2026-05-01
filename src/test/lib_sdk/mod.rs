@@ -1,3 +1,6 @@
+#![allow(clippy::clone_on_copy)]
+#![allow(clippy::too_many_arguments)]
+
 pub(crate) mod helpers;
 
 mod close_coop_other_side;

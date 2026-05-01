@@ -84,7 +84,7 @@ fn write_restricted_file(path: &Path, bytes: &[u8]) -> Result<(), RlnSignerError
         file.sync_all().map_err(|e| {
             RlnSignerError::Protocol(format!("failed to sync key source file: {e}"))
         })?;
-        return Ok(());
+        Ok(())
     }
 
     #[cfg(not(unix))]

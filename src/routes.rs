@@ -4405,8 +4405,16 @@ pub(crate) async fn send_rgb(
             })
             .await
             .unwrap()?;
-            let signed_psbt = unlocked_state.rgb_sign_psbt(begin_result.psbt)?;
-            unlocked_state.rgb_send_end(signed_psbt)?
+            let unlocked_state_copy = unlocked_state.clone();
+            let signed_psbt = tokio::task::spawn_blocking(move || {
+                unlocked_state_copy.rgb_sign_psbt(begin_result.psbt)
+            })
+            .await
+            .unwrap()?;
+            let unlocked_state_copy = unlocked_state.clone();
+            tokio::task::spawn_blocking(move || unlocked_state_copy.rgb_send_end(signed_psbt))
+                .await
+                .unwrap()?
         };
 
         Ok(Json(SendRgbResponse {
