@@ -1,3 +1,6 @@
+use crate::async_order::{
+    AsyncOrderAccessControl, AsyncOrderMessageHandler, AsyncPaymentsPreimageRoot,
+};
 use crate::kv_store::SeaOrmKvStore;
 use crate::rgb_kv_store::{
     get_rgb_channel_info_pending, is_channel_rgb, update_rgb_channel_amount, RgbKvStoreExt,
@@ -916,7 +919,7 @@ pub(crate) type PeerManager = LdkPeerManager<
     Arc<P2PGossipSync<Arc<NetworkGraph>, Arc<GossipVerifier>, Arc<FilesystemLogger>>>,
     Arc<OnionMessenger>,
     Arc<FilesystemLogger>,
-    IgnoringMessageHandler,
+    Arc<AsyncOrderMessageHandler>,
     ActiveSignerRef,
     Arc<ChainMonitor>,
 >;
@@ -989,6 +992,40 @@ pub(crate) type OutputSweeper = ldk_sweep::OutputSweeper<
     Arc<FilesystemLogger>,
     Arc<RgbOutputSpender>,
 >;
+
+struct VirtualChannelAccess {
+    trusted_no_broadcast: bool,
+    virtual_peer_pubkeys: Vec<PublicKey>,
+    channel_manager: Arc<ChannelManager>,
+}
+
+impl VirtualChannelAccess {
+    fn new(static_state: &StaticState, channel_manager: Arc<ChannelManager>) -> Self {
+        Self {
+            trusted_no_broadcast: static_state.enable_virtual_channels_v0,
+            virtual_peer_pubkeys: static_state.virtual_peer_pubkeys.clone(),
+            channel_manager,
+        }
+    }
+
+    fn is_virtual_peer(&self, peer: &PublicKey) -> bool {
+        self.virtual_peer_pubkeys.is_empty()
+            || self
+                .virtual_peer_pubkeys
+                .iter()
+                .any(|virtual_peer| virtual_peer == peer)
+    }
+}
+
+impl AsyncOrderAccessControl for VirtualChannelAccess {
+    fn allows_peer(&self, peer: &PublicKey) -> bool {
+        self.trusted_no_broadcast
+            && self.is_virtual_peer(peer)
+            && self.channel_manager.list_channels().iter().any(|channel| {
+                channel.counterparty.node_id == *peer && channel.trusted_no_broadcast
+            })
+    }
+}
 
 fn _safe_update_rgb_channel_amount(
     channel_id: &str,
@@ -2831,6 +2868,7 @@ pub(crate) async fn start_ldk(
         cur.subsec_nanos(),
         true,
         ldk_data_dir_path.clone(),
+        Arc::clone(&kv_store) as Arc<dyn KVStoreSync + Send + Sync>,
     ));
     let keys_manager: ActiveSignerRef = match &external_signer {
         Some(s) => Arc::new(DynRlnSigner::from_external(Arc::clone(s))),
@@ -2934,6 +2972,7 @@ pub(crate) async fn start_ldk(
                     user_config,
                     channel_monitor_references,
                     ldk_data_dir_path.clone(),
+                    Arc::clone(&kv_store) as Arc<dyn KVStoreSync + Send + Sync>,
                 );
                 <(BlockHash, ChannelManager)>::read(&mut &bytes[..], read_args).unwrap()
             }
@@ -2961,6 +3000,7 @@ pub(crate) async fn start_ldk(
                     chain_params,
                     cur.as_secs() as u32,
                     ldk_data_dir_path.clone(),
+                    Arc::clone(&kv_store) as Arc<dyn KVStoreSync + Send + Sync>,
                 );
                 (polled_best_block_hash, fresh_channel_manager)
             }
@@ -3229,11 +3269,41 @@ pub(crate) async fn start_ldk(
         .unwrap()
         .as_secs();
     rand::thread_rng().fill_bytes(&mut ephemeral_bytes);
+
+    let virtual_channel_access = Arc::new(VirtualChannelAccess::new(
+        static_state,
+        channel_manager.clone(),
+    ));
+    let async_order_handler = match static_state.lsp_base_url.as_ref() {
+        Some(lsp_base_url) => Arc::new(AsyncOrderMessageHandler::new_with_lsp_client(
+            virtual_channel_access,
+            lsp_base_url.clone(),
+            static_state.lsp_bearer_token.clone(),
+            Handle::current(),
+        )),
+        None => Arc::new(AsyncOrderMessageHandler::new(virtual_channel_access)),
+    };
+    let async_payments_preimage_root = Arc::new(
+        match internal_mnemonic.as_ref() {
+            Some(mnemonic) => AsyncPaymentsPreimageRoot::build_from_mnemonic(
+                mnemonic,
+                network,
+                &channel_manager.get_our_node_id(),
+            ),
+            None => AsyncPaymentsPreimageRoot::build_from_seed(
+                &ldk_seed,
+                network,
+                &channel_manager.get_our_node_id(),
+            ),
+        }
+        .map_err(|err| APIError::Unexpected(err.message))?,
+    );
+
     let lightning_msg_handler = MessageHandler {
         chan_handler: channel_manager.clone(),
         route_handler: gossip_sync.clone(),
         onion_message_handler: onion_messenger.clone(),
-        custom_message_handler: IgnoringMessageHandler {},
+        custom_message_handler: Arc::clone(&async_order_handler),
         send_only_message_handler: Arc::clone(&chain_monitor),
     };
     let peer_manager: Arc<PeerManager> = Arc::new(PeerManager::new(
@@ -3430,6 +3500,8 @@ pub(crate) async fn start_ldk(
         onion_messenger: onion_messenger.clone(),
         outbound_payments,
         peer_manager: Arc::clone(&peer_manager),
+        async_order_handler,
+        async_payments_preimage_root,
         kv_store: Arc::clone(&kv_store),
         bump_tx_event_handler,
         rgb_wallet_wrapper,
