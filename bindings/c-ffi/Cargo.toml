@@ -7,7 +7,7 @@ build = "build.rs"
 publish = false
 
 [lib]
-crate-type = ["staticlib", "cdylib"]
+crate-type = ["staticlib"]
 name = "rlncffi"
 
 [dependencies]
