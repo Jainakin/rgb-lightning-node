@@ -1,5 +1,5 @@
 use prost::Message;
-use signer_contract::{
+use signer_external::contract::{
     BootstrapData, ChannelHtlc, ChannelOp, ChannelPublicKeys, ChannelRequest, ChannelResponse,
     DebugDerivedAddress, NodeRequest, NodeResponse, SignerIdentity, SignerRequest, SignerResponse,
     WalletInputMetadata,

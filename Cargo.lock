@@ -4110,8 +4110,7 @@ dependencies = [
  "serde",
  "serde_json",
  "serial_test",
- "signer-contract",
- "signer-vls-adapter",
+ "signer-external",
  "tempfile",
  "thiserror 2.0.18",
  "time",
@@ -5000,25 +4999,15 @@ dependencies = [
 ]
 
 [[package]]
-name = "signer-contract"
+name = "signer-external"
 version = "0.1.0-alpha"
-source = "git+https://github.com/rmn-boiko/rln-external-signer.git?branch=main#79d9bb09ec5521a045cd759aa2cc31fd40670763"
-dependencies = [
- "serde",
- "thiserror 2.0.18",
-]
-
-[[package]]
-name = "signer-vls-adapter"
-version = "0.1.0-alpha"
-source = "git+https://github.com/rmn-boiko/rln-external-signer.git?branch=main#79d9bb09ec5521a045cd759aa2cc31fd40670763"
+source = "git+https://github.com/UTEXO-Protocol/rln-external-signer#f35c0fd8d30d3acd90bc9f1febbd90d23f99be9a"
 dependencies = [
  "base64 0.22.1",
  "bitcoin",
  "hex",
  "serde",
  "serde_json",
- "signer-contract",
  "thiserror 2.0.18",
  "tracing",
  "vls-core",

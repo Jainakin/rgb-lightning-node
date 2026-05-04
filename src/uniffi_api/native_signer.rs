@@ -3,9 +3,9 @@ use crate::signer::proto::{decode_signer_request, encode_signer_response};
 use anyhow::Context;
 use bitcoin::hex::FromHex;
 use bitcoin::Network;
-use signer_contract::{BootstrapData, ExternalSignerBackend, SignerRequest};
-use signer_vls_adapter::vls_real::RealVlsClient;
-use signer_vls_adapter::VlsSignerAdapter;
+use signer_external::contract::{BootstrapData, ExternalSignerBackend, SignerRequest};
+use signer_external::vls_adapter::vls_real::RealVlsClient;
+use signer_external::vls_adapter::VlsSignerAdapter;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use vls_protocol::msgs;
@@ -212,7 +212,7 @@ impl NativeExternalSigner {
             tracing::error!(error = ?e, "native external signer bootstrap failed");
             RlnError::Internal
         })? {
-            signer_contract::SignerResponse::Bootstrap(data) => data,
+            signer_external::contract::SignerResponse::Bootstrap(data) => data,
             other => {
                 tracing::error!(response = ?other, "native external signer returned non-bootstrap response");
                 return Err(RlnError::Internal);
