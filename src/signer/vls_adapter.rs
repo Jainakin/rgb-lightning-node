@@ -3,7 +3,7 @@ use super::transport::ExternalSignerTransport;
 use super::types::{
     BootstrapData, ChannelPublicKeys, ExternalChannelRequest, ExternalNodeRequest,
     ExternalNodeResponse, ExternalSignerRequest, ExternalSignerResponse, RlnSignerError,
-    WalletInputMetadata,
+    SpendableOutputUtxo, WalletInputMetadata,
 };
 use std::sync::Arc;
 
@@ -23,7 +23,6 @@ pub(crate) trait ExternalSignerBackend: Send + Sync {
         channel_keys_id_hex: String,
     ) -> Result<String, RlnSignerError>;
     fn node_get_shutdown_scriptpubkey(&self) -> Result<String, RlnSignerError>;
-    fn node_get_secure_random_bytes(&self) -> Result<String, RlnSignerError>;
     fn generate_channel_keys_id(
         &self,
         inbound: bool,
@@ -37,7 +36,7 @@ pub(crate) trait ExternalSignerBackend: Send + Sync {
     ) -> Result<(String, ChannelPublicKeys), RlnSignerError>;
     fn sign_spendable_outputs_psbt(
         &self,
-        descriptors: Vec<String>,
+        utxos: Vec<SpendableOutputUtxo>,
         psbt: String,
     ) -> Result<String, RlnSignerError>;
     fn sign_rgb_psbt(
@@ -130,19 +129,6 @@ impl ExternalSignerBackend for VlsSignerAdapter {
         }
     }
 
-    fn node_get_secure_random_bytes(&self) -> Result<String, RlnSignerError> {
-        match self.call(ExternalSignerRequest::Node(
-            ExternalNodeRequest::GetSecureRandomBytes,
-        ))? {
-            ExternalSignerResponse::Node(ExternalNodeResponse::RandomBytes { bytes_hex }) => {
-                Ok(bytes_hex)
-            }
-            other => Err(RlnSignerError::Protocol(format!(
-                "unexpected response for get_secure_random_bytes: {other:?}"
-            ))),
-        }
-    }
-
     fn generate_channel_keys_id(
         &self,
         inbound: bool,
@@ -205,10 +191,10 @@ impl ExternalSignerBackend for VlsSignerAdapter {
 
     fn sign_spendable_outputs_psbt(
         &self,
-        descriptors: Vec<String>,
+        utxos: Vec<SpendableOutputUtxo>,
         psbt: String,
     ) -> Result<String, RlnSignerError> {
-        match self.call(ExternalSignerRequest::SignSpendableOutputsPsbt { descriptors, psbt })? {
+        match self.call(ExternalSignerRequest::SignSpendableOutputsPsbt { utxos, psbt })? {
             ExternalSignerResponse::SignedPsbt { psbt } => Ok(psbt),
             other => Err(RlnSignerError::Protocol(format!(
                 "unexpected response for sign_spendable_outputs_psbt: {other:?}"
@@ -241,7 +227,10 @@ impl ExternalSignerBackend for VlsSignerAdapter {
 mod tests {
     use super::*;
     use crate::signer::proto::{decode_signer_request, encode_signer_response};
-    use crate::signer::types::{ExternalChannelResponse, SignerIdentity};
+    use crate::signer::types::{
+        BootstrapData, ExternalChannelResponse, ExternalNodeRequest, ExternalNodeResponse,
+        ExternalSignerRequest, ExternalSignerResponse, SignerIdentity,
+    };
     use std::sync::Mutex;
 
     #[derive(Default)]
@@ -269,6 +258,12 @@ mod tests {
             })?;
             let response = match req {
                 ExternalSignerRequest::Bootstrap => {
+                    let seed = [4u8; 32];
+                    let (inb, peer, recv) =
+                        signer_external::ldk_keys_manager_material::derive_ldk_keys_manager_auxiliary_secret_bytes(
+                            &seed,
+                        )
+                        .expect("derive");
                     ExternalSignerResponse::Bootstrap(BootstrapData {
                         identity: SignerIdentity {
                             node_id: "02".repeat(33),
@@ -278,6 +273,10 @@ mod tests {
                         },
                         protocol_version: "v1".to_string(),
                         api_level: 1,
+                        ldk_inbound_payment_key_hex: crate::signer::types::hex_encode_lower(&inb),
+                        ldk_peer_storage_key_hex: crate::signer::types::hex_encode_lower(&peer),
+                        ldk_receive_auth_key_hex: crate::signer::types::hex_encode_lower(&recv),
+                        async_payments_root_seed_hex: crate::signer::types::hex_encode_lower(&seed),
                     })
                 }
                 ExternalSignerRequest::Node(ExternalNodeRequest::GetNodeId { .. }) => {
@@ -361,9 +360,17 @@ mod tests {
             ExternalSignerRequest::Node(ExternalNodeRequest::GetShutdownScriptpubkey)
         ));
 
-        let random = adapter
-            .node_get_secure_random_bytes()
-            .expect("random bytes");
+        let random = match adapter
+            .call(ExternalSignerRequest::Node(
+                ExternalNodeRequest::GetSecureRandomBytes,
+            ))
+            .expect("random bytes call")
+        {
+            ExternalSignerResponse::Node(ExternalNodeResponse::RandomBytes { bytes_hex }) => {
+                bytes_hex
+            }
+            other => panic!("unexpected response: {other:?}"),
+        };
         assert_eq!(random.len(), 64);
         assert!(matches!(
             transport.recorded_request(),
@@ -400,5 +407,82 @@ mod tests {
             transport.recorded_request(),
             ExternalSignerRequest::SignRgbPsbt { .. }
         ));
+    }
+
+    struct FailingWireTransport;
+
+    impl ExternalSignerTransport for FailingWireTransport {
+        fn call(&self, _request: &[u8]) -> Result<Vec<u8>, RlnSignerError> {
+            Err(RlnSignerError::Transport(
+                "simulated wire failure".to_string(),
+            ))
+        }
+    }
+
+    #[test]
+    fn sign_rgb_psbt_propagates_transport_error_from_wire() {
+        let adapter = VlsSignerAdapter::new(Arc::new(FailingWireTransport));
+        let err = adapter
+            .sign_rgb_psbt(vec![], "deadbeef".to_string())
+            .expect_err("transport failure must surface");
+        assert!(matches!(err, RlnSignerError::Transport(_)));
+        assert!(err.to_string().contains("simulated wire failure"), "{err}");
+    }
+
+    struct WrongResponseTransport;
+
+    impl ExternalSignerTransport for WrongResponseTransport {
+        fn call(&self, request: &[u8]) -> Result<Vec<u8>, RlnSignerError> {
+            let req = decode_signer_request(request).map_err(|e| {
+                RlnSignerError::Protocol(format!("decode request envelope in mock failed: {e}"))
+            })?;
+            let response = match req {
+                ExternalSignerRequest::SignRgbPsbt { .. } => {
+                    ExternalSignerResponse::Node(ExternalNodeResponse::RandomBytes {
+                        bytes_hex: "aa".repeat(32),
+                    })
+                }
+                ExternalSignerRequest::Bootstrap => {
+                    let seed = [4u8; 32];
+                    let (inb, peer, recv) =
+                        signer_external::ldk_keys_manager_material::derive_ldk_keys_manager_auxiliary_secret_bytes(
+                            &seed,
+                        )
+                        .expect("derive");
+                    ExternalSignerResponse::Bootstrap(BootstrapData {
+                        identity: SignerIdentity {
+                            node_id: "02".repeat(33),
+                            account_xpub_vanilla: "xpub-v".to_string(),
+                            account_xpub_colored: "xpub-c".to_string(),
+                            master_fingerprint: "f00dbabe".to_string(),
+                        },
+                        protocol_version: "v1".to_string(),
+                        api_level: 1,
+                        ldk_inbound_payment_key_hex: crate::signer::types::hex_encode_lower(&inb),
+                        ldk_peer_storage_key_hex: crate::signer::types::hex_encode_lower(&peer),
+                        ldk_receive_auth_key_hex: crate::signer::types::hex_encode_lower(&recv),
+                        async_payments_root_seed_hex: crate::signer::types::hex_encode_lower(&seed),
+                    })
+                }
+                _ => ExternalSignerResponse::Node(ExternalNodeResponse::RandomBytes {
+                    bytes_hex: "bb".repeat(32),
+                }),
+            };
+            encode_signer_response(&response)
+        }
+    }
+
+    #[test]
+    fn sign_rgb_psbt_rejects_unexpected_wire_response() {
+        let adapter = VlsSignerAdapter::new(Arc::new(WrongResponseTransport));
+        let err = adapter
+            .sign_rgb_psbt(vec![], "psbt_hex".to_string())
+            .expect_err("wrong response type must error");
+        assert!(matches!(err, RlnSignerError::Protocol(_)));
+        assert!(
+            err.to_string()
+                .contains("unexpected response for sign_rgb_psbt"),
+            "{err}"
+        );
     }
 }

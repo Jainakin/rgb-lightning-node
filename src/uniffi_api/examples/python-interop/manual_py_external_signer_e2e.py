@@ -106,12 +106,7 @@ def unlock_with_attached_signer(
     bootstrap: rln.SdkExternalSignerBootstrap,
 ):
     node.unlock_with_attached_external_signer(
-        bootstrap.node_id,
-        bootstrap.account_xpub_vanilla,
-        bootstrap.account_xpub_colored,
-        bootstrap.master_fingerprint,
-        bootstrap.protocol_version,
-        bootstrap.api_level,
+        bootstrap,
         "user",
         "password",
         "localhost",

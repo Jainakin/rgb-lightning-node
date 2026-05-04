@@ -28,7 +28,8 @@ pub(crate) use key_source::{
 pub(crate) use transport::ExternalSignerTransport;
 #[allow(unused_imports)]
 pub(crate) use types::{
-    BootstrapData, RgbWalletAccountInfo, RlnSignerError, SignerIdentity, SUPPORTED_SIGNER_API_LEVEL,
+    validate_bootstrap_ldk_auxiliary_keys, BootstrapData, RgbWalletAccountInfo, RlnSignerError,
+    SignerIdentity, SUPPORTED_SIGNER_API_LEVEL,
 };
 
 /// Active signer type used by the current runtime wiring (internal mnemonic mode).

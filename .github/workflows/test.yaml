@@ -115,7 +115,7 @@ jobs:
       - name: Start regtest services
         run: ./regtest.sh start
       - name: Run lib_sdk tests
-        run: cargo test --features uniffi --test lib_sdk -- --test-threads=1
+        run: cargo test --features "uniffi,test-utils,vls" --test lib_sdk -- --test-threads=1
       - name: Stop regtest services
         if: always()
         run: ./regtest.sh stop

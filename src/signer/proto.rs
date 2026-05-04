@@ -2,7 +2,7 @@ use prost::Message;
 use signer_external::contract::{
     BootstrapData, ChannelHtlc, ChannelOp, ChannelPublicKeys, ChannelRequest, ChannelResponse,
     DebugDerivedAddress, NodeRequest, NodeResponse, SignerIdentity, SignerRequest, SignerResponse,
-    WalletInputMetadata,
+    SpendableOutputUtxo, WalletInputMetadata,
 };
 
 use super::types::RlnSignerError;
@@ -43,6 +43,14 @@ struct BootstrapDataV1 {
     pub protocol_version: String,
     #[prost(uint32, tag = "3")]
     pub api_level: u32,
+    #[prost(string, tag = "4")]
+    pub ldk_inbound_payment_key_hex: String,
+    #[prost(string, tag = "5")]
+    pub ldk_peer_storage_key_hex: String,
+    #[prost(string, tag = "6")]
+    pub ldk_receive_auth_key_hex: String,
+    #[prost(string, tag = "7")]
+    pub async_payments_root_seed_hex: String,
 }
 
 #[derive(Clone, PartialEq, Message)]
@@ -578,6 +586,60 @@ mod channel_response_v1 {
 }
 
 #[derive(Clone, PartialEq, Message)]
+struct SpendableOutputUtxoV1 {
+    #[prost(string, tag = "1")]
+    pub txid_hex: String,
+    #[prost(uint32, tag = "2")]
+    pub vout: u32,
+    #[prost(uint64, tag = "3")]
+    pub amount_sat: u64,
+    #[prost(uint32, tag = "4")]
+    pub keyindex: u32,
+    #[prost(bool, tag = "5")]
+    pub is_p2sh: bool,
+    #[prost(string, tag = "6")]
+    pub script_pubkey_hex: String,
+    #[prost(bool, tag = "7")]
+    pub is_in_coinbase: bool,
+}
+
+impl From<SpendableOutputUtxo> for SpendableOutputUtxoV1 {
+    fn from(value: SpendableOutputUtxo) -> Self {
+        Self {
+            txid_hex: value.txid_hex,
+            vout: value.vout,
+            amount_sat: value.amount_sat,
+            keyindex: value.keyindex,
+            is_p2sh: value.is_p2sh,
+            script_pubkey_hex: value.script_pubkey_hex,
+            is_in_coinbase: value.is_in_coinbase,
+        }
+    }
+}
+
+impl From<SpendableOutputUtxoV1> for SpendableOutputUtxo {
+    fn from(value: SpendableOutputUtxoV1) -> Self {
+        Self {
+            txid_hex: value.txid_hex,
+            vout: value.vout,
+            amount_sat: value.amount_sat,
+            keyindex: value.keyindex,
+            is_p2sh: value.is_p2sh,
+            script_pubkey_hex: value.script_pubkey_hex,
+            is_in_coinbase: value.is_in_coinbase,
+        }
+    }
+}
+
+#[derive(Clone, PartialEq, Message)]
+struct SignSpendableOutputsPsbtRequestV1 {
+    #[prost(message, repeated, tag = "1")]
+    pub utxos: Vec<SpendableOutputUtxoV1>,
+    #[prost(string, tag = "2")]
+    pub psbt: String,
+}
+
+#[derive(Clone, PartialEq, Message)]
 struct SignPsbtRequestV1 {
     #[prost(string, repeated, tag = "1")]
     pub descriptors: Vec<String>,
@@ -640,7 +702,7 @@ mod signer_request_v1 {
         #[prost(message, tag = "3")]
         Channel(ChannelRequestV1),
         #[prost(message, tag = "4")]
-        SignSpendableOutputsPsbt(SignPsbtRequestV1),
+        SignSpendableOutputsPsbt(SignSpendableOutputsPsbtRequestV1),
         #[prost(message, tag = "5")]
         SignRgbPsbt(SignPsbtRequestV1),
         #[prost(message, tag = "6")]
@@ -718,6 +780,10 @@ impl From<BootstrapData> for BootstrapDataV1 {
             identity: Some(value.identity.into()),
             protocol_version: value.protocol_version,
             api_level: value.api_level,
+            ldk_inbound_payment_key_hex: value.ldk_inbound_payment_key_hex,
+            ldk_peer_storage_key_hex: value.ldk_peer_storage_key_hex,
+            ldk_receive_auth_key_hex: value.ldk_receive_auth_key_hex,
+            async_payments_root_seed_hex: value.async_payments_root_seed_hex,
         }
     }
 }
@@ -725,13 +791,24 @@ impl From<BootstrapData> for BootstrapDataV1 {
 impl TryFrom<BootstrapDataV1> for BootstrapData {
     type Error = RlnSignerError;
     fn try_from(value: BootstrapDataV1) -> Result<Self, Self::Error> {
+        // Protobuf omits default numerics: treat `0` as unspecified and align with
+        // [`crate::signer::SUPPORTED_SIGNER_API_LEVEL`] (`1`).
+        let api_level = if value.api_level == 0 {
+            crate::signer::SUPPORTED_SIGNER_API_LEVEL
+        } else {
+            value.api_level
+        };
         Ok(Self {
             identity: value
                 .identity
                 .ok_or_else(|| proto_err("bootstrap")("missing identity"))?
                 .into(),
             protocol_version: value.protocol_version,
-            api_level: value.api_level,
+            api_level,
+            ldk_inbound_payment_key_hex: value.ldk_inbound_payment_key_hex,
+            ldk_peer_storage_key_hex: value.ldk_peer_storage_key_hex,
+            ldk_receive_auth_key_hex: value.ldk_receive_auth_key_hex,
+            async_payments_root_seed_hex: value.async_payments_root_seed_hex,
         })
     }
 }
@@ -1405,11 +1482,13 @@ impl From<SignerRequest> for SignerRequestV1 {
             SignerRequest::Bootstrap => signer_request_v1::Kind::Bootstrap(EmptyV1 {}),
             SignerRequest::Node(v) => signer_request_v1::Kind::Node(v.into()),
             SignerRequest::Channel(v) => signer_request_v1::Kind::Channel(v.into()),
-            SignerRequest::SignSpendableOutputsPsbt { descriptors, psbt } => {
-                signer_request_v1::Kind::SignSpendableOutputsPsbt(SignPsbtRequestV1 {
-                    descriptors,
-                    psbt,
-                })
+            SignerRequest::SignSpendableOutputsPsbt { utxos, psbt } => {
+                signer_request_v1::Kind::SignSpendableOutputsPsbt(
+                    SignSpendableOutputsPsbtRequestV1 {
+                        utxos: utxos.into_iter().map(|u| u.into()).collect(),
+                        psbt,
+                    },
+                )
             }
             SignerRequest::SignRgbPsbt { descriptors, psbt } => {
                 signer_request_v1::Kind::SignRgbPsbt(SignPsbtRequestV1 { descriptors, psbt })
@@ -1449,7 +1528,7 @@ impl TryFrom<SignerRequestV1> for SignerRequest {
             signer_request_v1::Kind::Channel(v) => Ok(Self::Channel(v.try_into()?)),
             signer_request_v1::Kind::SignSpendableOutputsPsbt(v) => {
                 Ok(Self::SignSpendableOutputsPsbt {
-                    descriptors: v.descriptors,
+                    utxos: v.utxos.into_iter().map(Into::into).collect(),
                     psbt: v.psbt,
                 })
             }
@@ -1601,6 +1680,10 @@ mod tests {
             },
             protocol_version: "1".to_string(),
             api_level: 1,
+            ldk_inbound_payment_key_hex: "ab".repeat(32),
+            ldk_peer_storage_key_hex: "cd".repeat(32),
+            ldk_receive_auth_key_hex: "ef".repeat(32),
+            async_payments_root_seed_hex: "11".repeat(32),
         });
         let wire = encode_signer_response(&response).expect("encode");
         let decoded = decode_signer_response(&wire).expect("decode");
@@ -1629,5 +1712,24 @@ mod tests {
         let wire = encode_signer_response(&response).expect("encode");
         let decoded = decode_signer_response(&wire).expect("decode");
         assert_eq!(decoded, response);
+    }
+
+    #[test]
+    fn sign_spendable_outputs_psbt_utxo_roundtrip() {
+        let request = SignerRequest::SignSpendableOutputsPsbt {
+            utxos: vec![SpendableOutputUtxo {
+                txid_hex: "aa".repeat(32),
+                vout: 1,
+                amount_sat: 50_000,
+                keyindex: 0,
+                is_p2sh: false,
+                script_pubkey_hex: String::new(),
+                is_in_coinbase: false,
+            }],
+            psbt: "psbt-here".to_string(),
+        };
+        let wire = encode_signer_request(&request).expect("encode");
+        let decoded = decode_signer_request(&wire).expect("decode");
+        assert_eq!(decoded, request);
     }
 }

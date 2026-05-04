@@ -291,7 +291,7 @@ pub(crate) fn fund_and_create_utxos(node: &SdkNode, node_name: &str) {
         fee_rate: CREATE_UTXOS_FEE_RATE,
         skip_sync: false,
     })
-    .unwrap_or_else(|_| panic!("{node_name}: createutxos"));
+    .unwrap_or_else(|e| panic!("{node_name}: createutxos: {e:?}"));
     mine(1);
     node.sync()
         .unwrap_or_else(|_| panic!("{node_name}: sync after createutxos"));

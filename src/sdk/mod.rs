@@ -12,8 +12,8 @@ use crate::ldk::{start_ldk, InvoiceType, PaymentInfo, VirtualChannelSessionStatu
 use crate::rgb::{check_rgb_proxy_endpoint, get_rgb_channel_info_optional};
 use crate::rgb_kv_store::{write_rgb_payment_info_file, RgbKvStoreExt};
 use crate::signer::{
-    read_key_source_file, write_key_source_file, BootstrapData, KeySourceFile,
-    SUPPORTED_SIGNER_API_LEVEL,
+    read_key_source_file, validate_bootstrap_ldk_auxiliary_keys, write_key_source_file,
+    BootstrapData, KeySourceFile, SUPPORTED_SIGNER_API_LEVEL,
 };
 use crate::swap::{SwapData, SwapInfo, SwapString};
 use crate::utils::{
@@ -389,7 +389,8 @@ fn validate_external_signer_bootstrap(bootstrap: &BootstrapData) -> Result<(), A
             bootstrap.api_level, SUPPORTED_SIGNER_API_LEVEL
         )));
     }
-    Ok(())
+    validate_bootstrap_ldk_auxiliary_keys(bootstrap)
+        .map_err(|e| APIError::ExternalSignerProtocolError(e.to_string()))
 }
 
 pub(crate) struct OpenChannelRequestData {
@@ -1605,7 +1606,11 @@ pub(crate) async fn send_rgb(
             unlocked_state_copy.rgb_sign_psbt(begin_result.psbt)
         })
         .await
-        .unwrap()?;
+        .unwrap()
+        .map_err(|e| {
+            tracing::error!("rgb_sign_psbt failed during RGB send: {e}");
+            APIError::from(e)
+        })?;
         let unlocked_state_copy = unlocked_state.clone();
         tokio::task::spawn_blocking(move || unlocked_state_copy.rgb_send_end(signed_psbt))
             .await
@@ -2086,6 +2091,8 @@ pub(crate) async fn close_channel(
     Ok(())
 }
 
+/// In external signer mode, on-chain RGB flows that need signing use `rgb_sign_psbt` (never the
+/// watch-only wallet's private `sign_psbt`) for create_utxos, send_btc, and send_rgb PSBT paths.
 pub(crate) async fn create_utxos(
     state: Arc<AppState>,
     request: CreateUtxosRequestData,
@@ -2381,7 +2388,10 @@ pub(crate) async fn send_btc(
     } else {
         let unsigned_psbt =
             unlocked_state.rgb_send_btc_begin(request.address, request.amount, request.fee_rate)?;
-        let signed_psbt = unlocked_state.rgb_sign_psbt(unsigned_psbt)?;
+        let signed_psbt = unlocked_state.rgb_sign_psbt(unsigned_psbt).map_err(|e| {
+            tracing::error!("rgb_sign_psbt failed during send_btc (PSBT path): {e}");
+            APIError::from(e)
+        })?;
         unlocked_state.rgb_send_btc_end(signed_psbt)?
     };
 
@@ -3980,7 +3990,8 @@ mod tests {
     use crate::ldk::attach_external_signer_transport;
     use crate::signer::in_process_transport::InProcessExternalSignerTransport;
     use crate::signer::types::{
-        ChannelPublicKeys, ExternalSignerRequest, ExternalSignerResponse, WalletInputMetadata,
+        ChannelPublicKeys, ExternalSignerRequest, ExternalSignerResponse, SpendableOutputUtxo,
+        WalletInputMetadata,
     };
     use crate::signer::vls_adapter::ExternalSignerBackend;
     use crate::signer::{read_key_source_file, RlnSignerError, SignerIdentity};
@@ -4034,6 +4045,12 @@ mod tests {
     }
 
     fn sample_bootstrap() -> BootstrapData {
+        let seed = [5u8; 32];
+        let (inb, peer, recv) =
+            signer_external::ldk_keys_manager_material::derive_ldk_keys_manager_auxiliary_secret_bytes(
+                &seed,
+            )
+            .expect("derive ldk aux");
         BootstrapData {
             identity: SignerIdentity {
                 node_id: "0279be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798"
@@ -4044,6 +4061,10 @@ mod tests {
             },
             protocol_version: "1".to_string(),
             api_level: 1,
+            ldk_inbound_payment_key_hex: crate::signer::types::hex_encode_lower(&inb),
+            ldk_peer_storage_key_hex: crate::signer::types::hex_encode_lower(&peer),
+            ldk_receive_auth_key_hex: crate::signer::types::hex_encode_lower(&recv),
+            async_payments_root_seed_hex: crate::signer::types::hex_encode_lower(&seed),
         }
     }
 
@@ -4109,10 +4130,6 @@ mod tests {
             Self::unsupported()
         }
 
-        fn node_get_secure_random_bytes(&self) -> Result<String, RlnSignerError> {
-            Self::unsupported()
-        }
-
         fn generate_channel_keys_id(
             &self,
             _inbound: bool,
@@ -4132,7 +4149,7 @@ mod tests {
 
         fn sign_spendable_outputs_psbt(
             &self,
-            _descriptors: Vec<String>,
+            _utxos: Vec<SpendableOutputUtxo>,
             _psbt: String,
         ) -> Result<String, RlnSignerError> {
             Self::unsupported()

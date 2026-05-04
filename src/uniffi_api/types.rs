@@ -446,6 +446,14 @@ pub struct SdkExternalSignerBootstrap {
     pub master_fingerprint: String,
     pub protocol_version: String,
     pub api_level: u32,
+    /// 64 hex chars (32 bytes): LDK inbound payment key material (`ExpandedKey::new`).
+    pub ldk_inbound_payment_key_hex: String,
+    /// 64 hex chars: LDK peer storage key inner bytes.
+    pub ldk_peer_storage_key_hex: String,
+    /// 64 hex chars: LDK receive-auth key bytes.
+    pub ldk_receive_auth_key_hex: String,
+    /// Empty for legacy async preimage derivation; otherwise 64 hex chars = host LDK/VLS node seed.
+    pub async_payments_root_seed_hex: String,
 }
 
 pub struct SdkOpenChannelRequest {

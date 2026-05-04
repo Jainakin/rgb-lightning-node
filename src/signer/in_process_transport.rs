@@ -49,6 +49,12 @@ mod tests {
         ) -> Result<ExternalSignerResponse, RlnSignerError> {
             match request {
                 ExternalSignerRequest::Bootstrap => {
+                    let seed = [8u8; 32];
+                    let (inb, peer, recv) =
+                        signer_external::ldk_keys_manager_material::derive_ldk_keys_manager_auxiliary_secret_bytes(
+                            &seed,
+                        )
+                        .expect("derive");
                     Ok(ExternalSignerResponse::Bootstrap(BootstrapData {
                         identity: SignerIdentity {
                             node_id: "node".to_string(),
@@ -58,6 +64,10 @@ mod tests {
                         },
                         protocol_version: "1".to_string(),
                         api_level: 1,
+                        ldk_inbound_payment_key_hex: crate::signer::types::hex_encode_lower(&inb),
+                        ldk_peer_storage_key_hex: crate::signer::types::hex_encode_lower(&peer),
+                        ldk_receive_auth_key_hex: crate::signer::types::hex_encode_lower(&recv),
+                        async_payments_root_seed_hex: crate::signer::types::hex_encode_lower(&seed),
                     }))
                 }
                 ExternalSignerRequest::Node(ExternalNodeRequest::GetNodeId { .. }) => {
@@ -96,10 +106,6 @@ mod tests {
             Err(RlnSignerError::Unsupported("unused".to_string()))
         }
 
-        fn node_get_secure_random_bytes(&self) -> Result<String, RlnSignerError> {
-            Err(RlnSignerError::Unsupported("unused".to_string()))
-        }
-
         fn generate_channel_keys_id(
             &self,
             _inbound: bool,
@@ -119,7 +125,7 @@ mod tests {
 
         fn sign_spendable_outputs_psbt(
             &self,
-            _descriptors: Vec<String>,
+            _utxos: Vec<super::super::types::SpendableOutputUtxo>,
             _psbt: String,
         ) -> Result<String, RlnSignerError> {
             Err(RlnSignerError::Unsupported("unused".to_string()))
@@ -156,6 +162,9 @@ mod tests {
             ExternalSignerResponse::Bootstrap(data) => {
                 assert_eq!(data.identity.node_id, "node");
                 assert_eq!(data.api_level, 1);
+                assert_eq!(data.ldk_inbound_payment_key_hex.len(), 64);
+                assert_eq!(data.ldk_peer_storage_key_hex.len(), 64);
+                assert_eq!(data.ldk_receive_auth_key_hex.len(), 64);
             }
             other => panic!("unexpected response: {other:?}"),
         }

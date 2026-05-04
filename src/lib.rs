@@ -25,6 +25,8 @@ mod routes;
 mod runtime;
 mod sdk;
 mod signer;
+#[cfg(all(feature = "uniffi", feature = "test-utils"))]
+pub mod signer_integration_wire;
 mod swap;
 #[cfg(feature = "test-utils")]
 pub mod test_utils;

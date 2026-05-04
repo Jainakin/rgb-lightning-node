@@ -116,10 +116,15 @@ const CONFIG_WALLET_MASTER_FINGERPRINT: &str = "wallet_master_fingerprint";
 const VIRTUAL_CHANNEL_DRAFTS_KEY: &str = "virtual_channel_drafts";
 const VIRTUAL_CHANNEL_SESSIONS_KEY: &str = "virtual_channel_sessions";
 use crate::error::APIError;
-use crate::rgb::{check_rgb_proxy_endpoint, get_rgb_channel_info_optional, RgbLibWalletWrapper};
+use crate::rgb::{
+    check_rgb_proxy_endpoint, get_rgb_channel_info_optional, RgbBumpWalletSource,
+    RgbLibWalletWrapper,
+};
+use crate::signer::vls_adapter::{ExternalSignerBackend, VlsSignerAdapter};
 use crate::signer::{
-    read_key_source_file, validate_key_source_matches_bootstrap, ExternalSigner,
-    ExternalSignerAttachment, ExternalSignerTransport, SUPPORTED_SIGNER_API_LEVEL,
+    read_key_source_file, validate_bootstrap_ldk_auxiliary_keys,
+    validate_key_source_matches_bootstrap, ExternalSigner, ExternalSignerAttachment,
+    ExternalSignerTransport, SUPPORTED_SIGNER_API_LEVEL,
 };
 use crate::signer::{
     ActiveSignerRef, DynRlnChannelSigner, DynRlnSigner, LightningEntropySource, RlnKeysInterface,
@@ -967,7 +972,7 @@ pub(crate) type OnionMessenger = LdkOnionMessenger<
 
 pub(crate) type BumpTxEventHandler = BumpTransactionEventHandler<
     Arc<BitcoindClient>,
-    Arc<Wallet<Arc<RgbLibWalletWrapper>, Arc<FilesystemLogger>>>,
+    Arc<Wallet<Arc<RgbBumpWalletSource>, Arc<FilesystemLogger>>>,
     ActiveSignerRef,
     Arc<FilesystemLogger>,
 >;
@@ -2704,7 +2709,8 @@ pub(crate) async fn start_ldk(
     ) = match key_source {
         NodeKeySource::InternalMnemonic(mnemonic) => (Some(mnemonic), false, None, None, None),
         NodeKeySource::External(external) => {
-            let signer = ExternalSigner::from_attachment(&external.signer_attachment);
+            let signer = ExternalSigner::from_attachment(&external.signer_attachment)
+                .map_err(|e| APIError::ExternalSignerProtocolError(e.to_string()))?;
             let bootstrap = external.signer_attachment.bootstrap.clone();
             if bootstrap.api_level != SUPPORTED_SIGNER_API_LEVEL {
                 return Err(APIError::ExternalSignerProtocolError(format!(
@@ -2838,44 +2844,45 @@ pub(crate) async fn start_ldk(
     // broadcaster.
     let broadcaster = bitcoind_client.clone();
 
-    // Initialize the KeysManager
-    // The key seed that we use to derive the node privkey (that corresponds to the node pubkey) and
-    // other secret key material.
-    let ldk_seed: [u8; 32] = if let Some(mnemonic) = internal_mnemonic.clone() {
-        let xkey: ExtendedKey = mnemonic
-            .into_extended_key()
-            .expect("a valid key should have been provided");
-        let master_xprv = &xkey
-            .into_xprv(network)
-            .expect("should be possible to get an extended private key");
-        let xprv: Xpriv = master_xprv
-            .derive_priv(&Secp256k1_30::new(), &ChildNumber::Hardened { index: 535 })
-            .unwrap();
-        xprv.private_key.secret_bytes()
-    } else {
-        let bootstrap = external_bootstrap
-            .as_ref()
-            .expect("external bootstrap must be present in external mode");
-        derive_ldk_seed_from_bootstrap(bootstrap)
-    };
+    // LDK signing: internal mode uses `KeysManager` from the mnemonic-derived LDK seed (BIP32 child
+    // 535 of the master xpriv). External mode uses `ExternalSigner` only; inbound / peer_storage /
+    // receive_auth key material comes from bootstrap hex fields (see `ExternalSigner::from_attachment`).
     let cur = SystemTime::now()
         .duration_since(SystemTime::UNIX_EPOCH)
         .unwrap();
 
-    let internal_keys_manager = Arc::new(KeysManager::new(
-        &ldk_seed,
-        cur.as_secs(),
-        cur.subsec_nanos(),
-        true,
-        ldk_data_dir_path.clone(),
-        Arc::clone(&kv_store) as Arc<dyn KVStoreSync + Send + Sync>,
-    ));
-    let keys_manager: ActiveSignerRef = match &external_signer {
-        Some(s) => Arc::new(DynRlnSigner::from_external(Arc::clone(s))),
-        None => Arc::new(DynRlnSigner::from_internal(Arc::clone(
-            &internal_keys_manager,
-        ))),
+    let keys_manager: ActiveSignerRef = if let Some(s) = external_signer.as_ref() {
+        Arc::new(DynRlnSigner::from_external(Arc::clone(s)))
+    } else {
+        let mnemonic = internal_mnemonic
+            .as_ref()
+            .expect("internal mnemonic must be present when external signer is not configured");
+        let ldk_seed: [u8; 32] = {
+            let xkey: ExtendedKey = mnemonic
+                .clone()
+                .into_extended_key()
+                .expect("a valid key should have been provided");
+            let master_xprv = &xkey
+                .into_xprv(network)
+                .expect("should be possible to get an extended private key");
+            let xprv: Xpriv = master_xprv
+                .derive_priv(&Secp256k1_30::new(), &ChildNumber::Hardened { index: 535 })
+                .unwrap();
+            xprv.private_key.secret_bytes()
+        };
+        let internal_keys_manager = Arc::new(KeysManager::new(
+            &ldk_seed,
+            cur.as_secs(),
+            cur.subsec_nanos(),
+            true,
+            ldk_data_dir_path.clone(),
+            Arc::clone(&kv_store) as Arc<dyn KVStoreSync + Send + Sync>,
+        ));
+        Arc::new(DynRlnSigner::from_internal(internal_keys_manager))
     };
+    // `entropy_source` (app APIs) and `ldk_entropy_source` (LDK wiring) always use OsRng.
+    // When LDK passes `keys_manager` as `EntropySource`, external `DynRlnSigner` delegates to
+    // `ExternalSigner` which uses the same system RNG — never the host `GetSecureRandomBytes` RPC.
     let entropy_source: Arc<dyn crate::signer::RlnEntropySource> = Arc::new(SystemEntropySource);
     let ldk_entropy_source = Arc::new(LightningEntropySource::new(Arc::clone(&entropy_source)));
 
@@ -3290,11 +3297,16 @@ pub(crate) async fn start_ldk(
                 network,
                 &channel_manager.get_our_node_id(),
             ),
-            None => AsyncPaymentsPreimageRoot::build_from_seed(
-                &ldk_seed,
-                network,
-                &channel_manager.get_our_node_id(),
-            ),
+            None => {
+                let bootstrap = external_bootstrap.as_ref().expect("external bootstrap");
+                let seed = crate::signer::types::async_payments_root_seed_bytes(bootstrap)
+                    .map_err(|e| APIError::ExternalSignerProtocolError(e.to_string()))?;
+                AsyncPaymentsPreimageRoot::build_from_seed(
+                    &seed,
+                    network,
+                    &channel_manager.get_our_node_id(),
+                )
+            }
         }
         .map_err(|err| APIError::Unexpected(err.message))?,
     );
@@ -3403,9 +3415,15 @@ pub(crate) async fn start_ldk(
         }
     }));
 
+    let bump_wallet_source = Arc::new(RgbBumpWalletSource {
+        inner: rgb_wallet_wrapper.clone(),
+        signer: keys_manager.clone(),
+        external_signer: external_signer.clone(),
+        external_signer_mode,
+    });
     let bump_tx_event_handler = Arc::new(BumpTransactionEventHandler::new(
         Arc::clone(&broadcaster),
-        Arc::new(Wallet::new(rgb_wallet_wrapper.clone(), Arc::clone(&logger))),
+        Arc::new(Wallet::new(bump_wallet_source, Arc::clone(&logger))),
         Arc::clone(&keys_manager),
         Arc::clone(&logger),
     ));
@@ -3685,29 +3703,20 @@ pub(crate) async fn start_ldk(
 pub(crate) fn attach_external_signer_transport(
     transport: Arc<dyn ExternalSignerTransport>,
 ) -> Result<ExternalSignerAttachment, APIError> {
-    let signer = ExternalSigner::with_vls_adapter(Arc::clone(&transport));
-    let bootstrap = signer.bootstrap().map_err(|e| match e {
+    let probe = VlsSignerAdapter::new(Arc::clone(&transport));
+    let bootstrap = probe.bootstrap().map_err(|e| match e {
         crate::signer::RlnSignerError::Transport(msg) => APIError::ExternalSignerUnavailable(msg),
         crate::signer::RlnSignerError::Protocol(msg)
         | crate::signer::RlnSignerError::Unsupported(msg) => {
             APIError::ExternalSignerProtocolError(msg)
         }
     })?;
+    validate_bootstrap_ldk_auxiliary_keys(&bootstrap)
+        .map_err(|e| APIError::ExternalSignerProtocolError(e.to_string()))?;
     Ok(ExternalSignerAttachment {
         bootstrap,
         transport,
     })
-}
-
-fn derive_ldk_seed_from_bootstrap(bootstrap: &crate::signer::BootstrapData) -> [u8; 32] {
-    let mut seed_material = Vec::new();
-    seed_material.extend_from_slice(bootstrap.identity.node_id.as_bytes());
-    seed_material.extend_from_slice(bootstrap.identity.account_xpub_vanilla.as_bytes());
-    seed_material.extend_from_slice(bootstrap.identity.account_xpub_colored.as_bytes());
-    seed_material.extend_from_slice(bootstrap.identity.master_fingerprint.as_bytes());
-    seed_material.extend_from_slice(bootstrap.protocol_version.as_bytes());
-
-    <sha256::Hash as bitcoin::hashes::Hash>::hash(&seed_material).to_byte_array()
 }
 
 impl AppState {
@@ -3985,5 +3994,28 @@ mod tests {
             ),
             Ok(()) => panic!("expected error when kv_store table is missing"),
         }
+    }
+
+    #[test]
+    fn ldk_auxiliary_secret_derivation_matches_keys_manager() {
+        use lightning::ln::inbound_payment::ExpandedKey;
+        let seed = [18u8; 32];
+        let kv = build_kv_store();
+        let km = KeysManager::new(
+            &seed,
+            1,
+            2,
+            true,
+            std::env::temp_dir().join(format!("ldk-aux-parity-{}", uuid::Uuid::new_v4())),
+            kv,
+        );
+        let (a, b, c) =
+            signer_external::ldk_keys_manager_material::derive_ldk_keys_manager_auxiliary_secret_bytes(
+                &seed,
+            )
+            .expect("derive");
+        assert_eq!(km.get_expanded_key(), ExpandedKey::new(a));
+        assert_eq!(km.get_peer_storage_key().inner, b);
+        assert_eq!(km.get_receive_auth_key().0, c);
     }
 }

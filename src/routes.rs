@@ -1990,7 +1990,10 @@ pub(crate) async fn create_utxos(
                 payload.fee_rate,
                 payload.skip_sync,
             )?;
-            let signed_psbt = unlocked_state.rgb_sign_psbt(unsigned_psbt)?;
+            let signed_psbt = unlocked_state.rgb_sign_psbt(unsigned_psbt).map_err(|e| {
+                tracing::error!("rgb_sign_psbt failed in external signer mode (create_utxos): {e}");
+                APIError::from(e)
+            })?;
             unlocked_state.rgb_create_utxos_end(signed_psbt, payload.skip_sync)?;
         } else {
             unlocked_state.rgb_create_utxos(
@@ -4080,7 +4083,10 @@ pub(crate) async fn send_btc(
                 payload.amount,
                 payload.fee_rate,
             )?;
-            let signed_psbt = unlocked_state.rgb_sign_psbt(unsigned_psbt)?;
+            let signed_psbt = unlocked_state.rgb_sign_psbt(unsigned_psbt).map_err(|e| {
+                tracing::error!("rgb_sign_psbt failed during send_btc (PSBT path): {e}");
+                APIError::from(e)
+            })?;
             unlocked_state.rgb_send_btc_end(signed_psbt)?
         };
 
@@ -4410,7 +4416,11 @@ pub(crate) async fn send_rgb(
                 unlocked_state_copy.rgb_sign_psbt(begin_result.psbt)
             })
             .await
-            .unwrap()?;
+            .unwrap()
+            .map_err(|e| {
+                tracing::error!("rgb_sign_psbt failed during RGB send: {e}");
+                APIError::from(e)
+            })?;
             let unlocked_state_copy = unlocked_state.clone();
             tokio::task::spawn_blocking(move || unlocked_state_copy.rgb_send_end(signed_psbt))
                 .await

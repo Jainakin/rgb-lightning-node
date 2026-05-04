@@ -17,25 +17,41 @@ use lightning::sign::{
 };
 use lightning::util::ser::Writeable;
 use lightning_invoice::RawBolt11Invoice;
-use serde_json::json;
 use std::str::FromStr;
 
 use super::channel_signer::ExternalChannelSigner;
+use super::entropy::SystemEntropySource;
 use super::transport::ExternalSignerTransport;
 use super::types::{
-    BootstrapData, ExternalNodeRequest, ExternalNodeResponse, ExternalSignerRequest,
-    ExternalSignerResponse, RgbWalletAccountInfo, RlnSignerError, WalletInputMetadata,
+    validate_bootstrap_ldk_auxiliary_keys, BootstrapData, ExternalNodeRequest,
+    ExternalNodeResponse, ExternalSignerRequest, ExternalSignerResponse, RgbWalletAccountInfo,
+    RlnSignerError, SpendableOutputUtxo, WalletInputMetadata,
 };
 use super::vls_adapter::{ExternalSignerBackend, VlsSignerAdapter};
+use super::RlnEntropySource;
 use super::RlnKeysInterface;
 
-/// Transport-backed entrypoint for external signer protocol calls.
+type LdkAuxiliaryKeysTriple = ([u8; 32], [u8; 32], [u8; 32]);
+
+/// Transport-backed external signer: LDK `NodeSigner` / channel / PSBT ops delegate to the host.
+/// Inbound-payment, peer-storage, and receive-auth key material is read from bootstrap hex fields
+/// (same 32-byte triple as [`lightning::sign::KeysManager`] uses for expanded / peer storage /
+/// receive auth from the LDK seed — the host supplies them via [`BootstrapData`]).
+/// When set, bootstrap `async_payments_root_seed_hex` carries the same 32-byte LDK/VLS node seed
+/// for async LSP preimage derivation; empty means a legacy deterministic fallback.
 ///
-/// LDK trait implementations are added in the next integration step; this
-/// type currently provides a typed request/response boundary over raw bytes.
+/// Production unlock builds this via [`ExternalSigner::from_attachment`]. `crate::ldk::start_ldk`
+/// does not construct a local [`lightning::sign::KeysManager`] when the active signer is external.
+/// When LDK passes this type as [`lightning::sign::EntropySource`], randomness is drawn from
+/// [`SystemEntropySource`] (same OsRng path as `start_ldk`'s `ldk_entropy_source`) so channel-scoped
+/// randomness never depends on host RPC latency or policy. Host-backed signing uses [`NodeSigner`],
+/// [`SignerProvider`], and related traits only.
 #[derive(Clone)]
 pub(crate) struct ExternalSigner {
     backend: Arc<dyn ExternalSignerBackend>,
+    ldk_inbound_payment_key: [u8; 32],
+    ldk_peer_storage_key: [u8; 32],
+    ldk_receive_auth_key: [u8; 32],
 }
 
 #[derive(Clone)]
@@ -52,14 +68,38 @@ impl ExternalSigner {
             .map_err(|_| ())
     }
 
-    pub(crate) fn with_vls_adapter(transport: Arc<dyn ExternalSignerTransport>) -> Self {
+    pub(crate) fn from_attachment(
+        attachment: &ExternalSignerAttachment,
+    ) -> Result<Self, RlnSignerError> {
+        let (ldk_inbound_payment_key, ldk_peer_storage_key, ldk_receive_auth_key) =
+            Self::ldk_aux_from_bootstrap(&attachment.bootstrap)?;
         let backend: Arc<dyn ExternalSignerBackend> =
-            Arc::new(VlsSignerAdapter::new(Arc::clone(&transport)));
-        Self { backend }
+            Arc::new(VlsSignerAdapter::new(Arc::clone(&attachment.transport)));
+        Ok(Self {
+            backend,
+            ldk_inbound_payment_key,
+            ldk_peer_storage_key,
+            ldk_receive_auth_key,
+        })
     }
 
-    pub(crate) fn from_attachment(attachment: &ExternalSignerAttachment) -> Self {
-        Self::with_vls_adapter(Arc::clone(&attachment.transport))
+    fn ldk_aux_from_bootstrap(
+        bootstrap: &BootstrapData,
+    ) -> Result<LdkAuxiliaryKeysTriple, RlnSignerError> {
+        validate_bootstrap_ldk_auxiliary_keys(bootstrap)?;
+        let parse32 = |h: &str| -> Result<[u8; 32], RlnSignerError> {
+            let v = Vec::<u8>::from_hex(h).map_err(|e| {
+                RlnSignerError::Protocol(format!("invalid LDK auxiliary key hex: {e}"))
+            })?;
+            v.try_into().map_err(|_| {
+                RlnSignerError::Protocol("LDK auxiliary key must decode to 32 bytes".into())
+            })
+        };
+        Ok((
+            parse32(&bootstrap.ldk_inbound_payment_key_hex)?,
+            parse32(&bootstrap.ldk_peer_storage_key_hex)?,
+            parse32(&bootstrap.ldk_receive_auth_key_hex)?,
+        ))
     }
 
     pub(crate) fn bootstrap(&self) -> Result<BootstrapData, RlnSignerError> {
@@ -111,57 +151,67 @@ impl ExternalSigner {
             .get_wallet_input_metadata(txid_hex, vout, script_pubkey_hex, amount_sat)
     }
 
-    fn seed_material(&self) -> [u8; 32] {
-        // Deterministic local seed material for LDK helper keys. This is not a signing secret;
-        // channel/node signatures are delegated to external signer calls.
-        let bootstrap = self.bootstrap().ok();
-        let mut out = [0u8; 32];
-        if let Some(data) = bootstrap {
-            let mut acc = [0u8; 32];
-            for (i, b) in data.identity.node_id.as_bytes().iter().enumerate() {
-                acc[i % 32] ^= *b;
-            }
-            out = acc;
-        }
-        out
-    }
-
     fn recipient_label(recipient: Recipient) -> &'static str {
         match recipient {
             Recipient::Node => "node",
             Recipient::PhantomNode => "phantom",
         }
     }
+
+    fn spendable_descriptor_to_utxo(d: &SpendableOutputDescriptor) -> SpendableOutputUtxo {
+        match d {
+            SpendableOutputDescriptor::StaticOutput {
+                outpoint, output, ..
+            } => SpendableOutputUtxo {
+                txid_hex: outpoint.txid.to_string(),
+                vout: outpoint.index as u32,
+                amount_sat: output.value.to_sat(),
+                keyindex: 1,
+                is_p2sh: false,
+                script_pubkey_hex: String::new(),
+                is_in_coinbase: false,
+            },
+            SpendableOutputDescriptor::DelayedPaymentOutput(o) => SpendableOutputUtxo {
+                txid_hex: o.outpoint.txid.to_string(),
+                vout: o.outpoint.index as u32,
+                amount_sat: o.output.value.to_sat(),
+                keyindex: 0,
+                is_p2sh: false,
+                script_pubkey_hex: String::new(),
+                is_in_coinbase: false,
+            },
+            SpendableOutputDescriptor::StaticPaymentOutput(o) => SpendableOutputUtxo {
+                txid_hex: o.outpoint.txid.to_string(),
+                vout: o.outpoint.index as u32,
+                amount_sat: o.output.value.to_sat(),
+                keyindex: 0,
+                is_p2sh: false,
+                script_pubkey_hex: String::new(),
+                is_in_coinbase: false,
+            },
+        }
+    }
 }
 
 impl EntropySource for ExternalSigner {
     fn get_secure_random_bytes(&self) -> [u8; 32] {
-        let bytes_hex = self
-            .backend
-            .node_get_secure_random_bytes()
-            .unwrap_or_else(|_| "00".repeat(32));
-        let bytes = Vec::<u8>::from_hex(&bytes_hex).unwrap_or_else(|_| vec![0u8; 32]);
-        let mut out = [0u8; 32];
-        if bytes.len() >= 32 {
-            out.copy_from_slice(&bytes[..32]);
-        }
-        out
+        RlnEntropySource::get_secure_random_bytes(&SystemEntropySource)
     }
 }
 
 impl NodeSigner for ExternalSigner {
     fn get_expanded_key(&self) -> lightning::ln::inbound_payment::ExpandedKey {
-        lightning::ln::inbound_payment::ExpandedKey::new(self.seed_material())
+        lightning::ln::inbound_payment::ExpandedKey::new(self.ldk_inbound_payment_key)
     }
 
     fn get_peer_storage_key(&self) -> PeerStorageKey {
         PeerStorageKey {
-            inner: self.seed_material(),
+            inner: self.ldk_peer_storage_key,
         }
     }
 
     fn get_receive_auth_key(&self) -> lightning::sign::ReceiveAuthKey {
-        lightning::sign::ReceiveAuthKey(self.seed_material())
+        lightning::sign::ReceiveAuthKey(self.ldk_receive_auth_key)
     }
 
     fn get_node_id(&self, recipient: Recipient) -> Result<PublicKey, ()> {
@@ -347,54 +397,13 @@ impl RlnKeysInterface for ExternalSigner {
         psbt: Psbt,
         _secp_ctx: &bitcoin::secp256k1::Secp256k1<bitcoin::secp256k1::All>,
     ) -> Result<Psbt, ()> {
-        let descriptor_payload = descriptors
+        let utxos: Vec<SpendableOutputUtxo> = descriptors
             .iter()
-            .map(|d| {
-                match *d {
-                    SpendableOutputDescriptor::StaticOutput {
-                        ref outpoint,
-                        ref output,
-                        ..
-                    } => {
-                        json!({
-                            "txid": outpoint.txid.to_string(),
-                            "outnum": outpoint.index,
-                            "amount": output.value.to_sat(),
-                            "keyindex": 1u32,
-                            "is_p2sh": false,
-                            "script_hex": "",
-                            "is_in_coinbase": false,
-                        })
-                    }
-                    SpendableOutputDescriptor::DelayedPaymentOutput(ref o) => {
-                        json!({
-                            "txid": o.outpoint.txid.to_string(),
-                            "outnum": o.outpoint.index,
-                            "amount": o.output.value.to_sat(),
-                            "keyindex": 0u32,
-                            "is_p2sh": false,
-                            "script_hex": "",
-                            "is_in_coinbase": false,
-                        })
-                    }
-                    SpendableOutputDescriptor::StaticPaymentOutput(ref o) => {
-                        json!({
-                            "txid": o.outpoint.txid.to_string(),
-                            "outnum": o.outpoint.index,
-                            "amount": o.output.value.to_sat(),
-                            "keyindex": 0u32,
-                            "is_p2sh": false,
-                            "script_hex": "",
-                            "is_in_coinbase": false,
-                        })
-                    }
-                }
-                .to_string()
-            })
-            .collect::<Vec<_>>();
+            .map(|d| Self::spendable_descriptor_to_utxo(d))
+            .collect();
         let signed_psbt = self
             .backend
-            .sign_spendable_outputs_psbt(descriptor_payload, psbt.to_string())
+            .sign_spendable_outputs_psbt(utxos, psbt.to_string())
             .map_err(|_| ())?;
         Psbt::from_str(&signed_psbt).map_err(|_| ())
     }

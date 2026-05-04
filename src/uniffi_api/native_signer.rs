@@ -182,6 +182,10 @@ impl NativeExternalSigner {
             master_fingerprint: data.identity.master_fingerprint,
             protocol_version: data.protocol_version,
             api_level: data.api_level,
+            ldk_inbound_payment_key_hex: data.ldk_inbound_payment_key_hex,
+            ldk_peer_storage_key_hex: data.ldk_peer_storage_key_hex,
+            ldk_receive_auth_key_hex: data.ldk_receive_auth_key_hex,
+            async_payments_root_seed_hex: data.async_payments_root_seed_hex,
         }
     }
 }
