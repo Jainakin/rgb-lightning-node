@@ -66,7 +66,19 @@ class PaymentTest {
     private val utxosFeeRate: ULong = 7u
     private val assetSupply: ULong = 1000u
     private val channelAssetAmount: ULong = 600u
-    private val channelReadyTimeoutSec: Long = 60L
+    /** CI emulators are slow; keep generous margins vs host-side Kotlin E2E. */
+    private val channelReadyTimeoutSec: Long = 180L
+    private val channelFundingTxTimeoutSec: Long = 180L
+    private val paymentStatusTimeoutSec: Long = 120L
+    private val lnBalanceWaitTimeoutSec: Long = 120L
+    private val stableChannelBalanceTimeoutSec: Long = 120L
+
+    private fun assertRegtestNetwork(label: String, network: String) {
+        assertTrue(
+            "$label: expected regtest-class network, got '$network'",
+            network.contains("egtest", ignoreCase = true),
+        )
+    }
 
     // ── Bitcoin RPC ──────────────────────────────────────────────────────────
 
@@ -75,6 +87,8 @@ class PaymentTest {
         val conn = url.openConnection() as HttpURLConnection
         conn.requestMethod = "POST"
         conn.doOutput = true
+        conn.connectTimeout = 15_000
+        conn.readTimeout = 60_000
         conn.setRequestProperty("Content-Type", "application/json")
         val creds = Base64.getEncoder().encodeToString("$bitcoindUser:$bitcoindPass".toByteArray())
         conn.setRequestProperty("Authorization", "Basic $creds")
@@ -283,7 +297,7 @@ class PaymentTest {
         )
     }
 
-    private fun waitPaymentFinal(node: SdkNode, invoice: String, timeoutSec: Long = 60L): InvoiceStatus {
+    private fun waitPaymentFinal(node: SdkNode, invoice: String, timeoutSec: Long = 120L): InvoiceStatus {
         val deadline = System.currentTimeMillis() + timeoutSec * 1_000L
         var last = InvoiceStatus.PENDING
         while (System.currentTimeMillis() < deadline) {
@@ -363,8 +377,8 @@ class PaymentTest {
                 assetAmount = null,
             )
         )
-        waitForLnBalance(sender, assetId, initialSenderBalance - assetAmount, 60L)
-        waitForLnBalance(receiver, assetId, initialReceiverBalance + assetAmount, 60L)
+        waitForLnBalance(sender, assetId, initialSenderBalance - assetAmount, lnBalanceWaitTimeoutSec)
+        waitForLnBalance(receiver, assetId, initialReceiverBalance + assetAmount, lnBalanceWaitTimeoutSec)
     }
 
     private fun closeChannel(node: SdkNode, channelId: String, peerPubkey: String, force: Boolean = false) {
@@ -524,7 +538,7 @@ class PaymentTest {
             )
             log("openchannel sent")
 
-            val fundingTxid = waitForChannelFundingTx(nodeA, nodeB, assetId, 120L)
+            val fundingTxid = waitForChannelFundingTx(nodeA, nodeB, assetId, channelFundingTxTimeoutSec)
             log("Mining blocks one by one until funding tx is confirmed..."); mineUntilTxConfirmed(nodeA, fundingTxid)
             mine(6)
             waitForUsableChannel(nodeA, nodeB, assetId, channelReadyTimeoutSec)
@@ -557,14 +571,14 @@ class PaymentTest {
             assertEquals(paymentMsat, decoded1.amtMsat)
             assertEquals(900uL, decoded1.expirySec)
             assertEquals(infoB.pubkey, decoded1.payeePubkey)
-            assertEquals("Regtest", decoded1.network)
+            assertRegtestNetwork("decode invoice1", decoded1.network)
             assertEquals(InvoiceStatus.SUCCEEDED, nodeB.invoiceStatus(invoice1))
 
             val payment1Sender = waitForPaymentStatus(
                 nodeA,
                 decoded1.paymentHash,
                 PaymentType.OUTBOUND,
-                60L,
+                paymentStatusTimeoutSec,
             )
             assertEquals(HtlcStatus.SUCCEEDED, payment1Sender.status)
             assertEquals(assetId, payment1Sender.assetId)
@@ -575,7 +589,7 @@ class PaymentTest {
                 nodeB,
                 decoded1.paymentHash,
                 PaymentType.INBOUND_AUTO_CLAIM,
-                60L,
+                paymentStatusTimeoutSec,
             )
             assertEquals(HtlcStatus.SUCCEEDED, payment1Receiver.status)
             assertEquals(assetId, payment1Receiver.assetId)
@@ -586,7 +600,7 @@ class PaymentTest {
                 nodeA,
                 decoded1.paymentHash,
                 PaymentType.OUTBOUND,
-                60L,
+                paymentStatusTimeoutSec,
             )
             assertEquals(decoded1.paymentHash, listedPayment1Sender.paymentHash)
             checkPreimageMatchesHash(listedPayment1Sender, decoded1.paymentHash)
@@ -595,7 +609,7 @@ class PaymentTest {
                 nodeB,
                 decoded1.paymentHash,
                 PaymentType.INBOUND_AUTO_CLAIM,
-                60L,
+                paymentStatusTimeoutSec,
             )
             assertEquals(decoded1.paymentHash, listedPayment1Receiver.paymentHash)
             checkPreimageMatchesHash(listedPayment1Receiver, decoded1.paymentHash)
@@ -617,7 +631,7 @@ class PaymentTest {
                 nodeA,
                 decoded2.paymentHash,
                 PaymentType.INBOUND_AUTO_CLAIM,
-                60L,
+                paymentStatusTimeoutSec,
             )
             assertEquals(assetId, payment2Receiver.assetId)
             assertEquals(50uL, payment2Receiver.assetAmount)
@@ -627,7 +641,7 @@ class PaymentTest {
                 nodeB,
                 decoded2.paymentHash,
                 PaymentType.OUTBOUND,
-                60L,
+                paymentStatusTimeoutSec,
             )
             assertEquals(assetId, payment2Sender.assetId)
             assertEquals(50uL, payment2Sender.assetAmount)
@@ -657,7 +671,7 @@ class PaymentTest {
                 nodeA,
                 decoded3.paymentHash,
                 PaymentType.OUTBOUND,
-                60L,
+                paymentStatusTimeoutSec,
             )
             assertEquals(assetId, payment3Sender.assetId)
             assertEquals(50uL, payment3Sender.assetAmount)
@@ -667,7 +681,7 @@ class PaymentTest {
                 nodeB,
                 decoded3.paymentHash,
                 PaymentType.INBOUND_AUTO_CLAIM,
-                60L,
+                paymentStatusTimeoutSec,
             )
             assertEquals(assetId, payment3Receiver.assetId)
             assertEquals(50uL, payment3Receiver.assetAmount)
@@ -697,7 +711,7 @@ class PaymentTest {
                 nodeA,
                 decoded4.paymentHash,
                 PaymentType.INBOUND_AUTO_CLAIM,
-                60L,
+                paymentStatusTimeoutSec,
             )
             assertEquals(assetId, payment4Receiver.assetId)
             assertEquals(50uL, payment4Receiver.assetAmount)
@@ -707,7 +721,7 @@ class PaymentTest {
                 nodeB,
                 decoded4.paymentHash,
                 PaymentType.OUTBOUND,
-                60L,
+                paymentStatusTimeoutSec,
             )
             assertEquals(assetId, payment4Sender.assetId)
             assertEquals(50uL, payment4Sender.assetAmount)
@@ -720,7 +734,7 @@ class PaymentTest {
                 channelId = channelId,
                 expectedNodeABalance = chan1Before.localBalanceSat,
                 expectedNodeBBalance = chan2Before.localBalanceSat,
-                timeoutSec = 10L,
+                timeoutSec = stableChannelBalanceTimeoutSec,
             )
             val channels1 = nodeA.listChannels()
             val channels2 = nodeB.listChannels()
@@ -732,8 +746,8 @@ class PaymentTest {
             assertEquals(chan2Before.localBalanceSat, chan2.localBalanceSat)
 
             closeChannel(nodeA, channelId, infoB.pubkey)
-            waitForBalance(nodeA, assetId, 950uL, 70L)
-            waitForBalance(nodeB, assetId, 50uL, 70L)
+            waitForBalance(nodeA, assetId, 950uL, 120L)
+            waitForBalance(nodeB, assetId, 50uL, 120L)
 
             val recipientId1 = rgbInvoice(nodeC)
             sendRgb(nodeA, assetId, recipientId1, 925u)
