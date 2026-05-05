@@ -9,7 +9,7 @@ cd "$ROOT_DIR"
 
 LANGUAGE="${1:-}"
 if [[ "$LANGUAGE" != "kotlin" && "$LANGUAGE" != "swift" ]]; then
-  echo "usage: $0 <kotlin|swift> [output_dir] [path_to_librgb_lightning_node.so_or_dylib] [config_path]"
+  echo "usage: $0 <kotlin|swift> [output_dir] [path_to_librgb_lightning_node.so_or_dylib]"
   exit 1
 fi
 
@@ -24,7 +24,6 @@ fi
 # Default: host `target/release/`. When Cargo builds with `--target <triple>`, use that tree or pass
 # the .so/.dylib path as the 3rd argument (or set UNIFFI_LIBRARY_PATH).
 LIB_PATH="${3:-${UNIFFI_LIBRARY_PATH:-}}"
-CONFIG_PATH="${4:-${UNIFFI_CONFIG_PATH:-$ROOT_DIR/uniffi.toml}}"
 if [[ -z "$LIB_PATH" ]]; then
   if [[ -f "$ROOT_DIR/target/release/librgb_lightning_node.so" ]]; then
     LIB_PATH="$ROOT_DIR/target/release/librgb_lightning_node.so"
@@ -70,7 +69,7 @@ cargo run --manifest-path "$ROOT_DIR/bindings/uniffi-bindgen/Cargo.toml" -- \
   --library \
   --crate rgb_lightning_node \
   --language "$LANGUAGE" \
-  --config "$CONFIG_PATH" \
+  --config "$ROOT_DIR/uniffi.toml" \
   -o "$OUT_DIR"
 
 if [[ "$CLEANUP_UDL" == "1" ]]; then
