@@ -8,7 +8,6 @@ mod close_coop_standard;
 mod close_coop_vanilla;
 mod close_force_standard;
 mod external_signer;
-mod invoice;
 mod multi_hop;
 mod openchannel_push_asset_amount;
 mod payment;
