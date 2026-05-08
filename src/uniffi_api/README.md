@@ -14,6 +14,14 @@ Current lifecycle/threading model:
   `CurrentThread` (or no runtime) uses a shared dedicated Tokio runtime to avoid
   `block_in_place` panic paths.
 
+Native external signer note:
+- `NativeExternalSigner` is a convenience in-process signer object exposed only in
+  `uniffi,vls` builds generated from the compiled library.
+- It is storage-backed, not seed-backed: callers provide a signer storage
+  directory, and the signer creates or reloads its own persisted seed there.
+- RLN init/unlock in external-signer mode still consumes bootstrap/attachment
+  data, not mnemonic/seed phrases.
+
 ## Dependency layering
 
 Current internal layering is:

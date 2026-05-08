@@ -553,11 +553,6 @@ dictionary SdkExternalSignerBootstrap {
     string master_fingerprint;
     string protocol_version;
     u32 api_level;
-    string ldk_inbound_payment_key_hex;
-    string ldk_peer_storage_key_hex;
-    string ldk_receive_auth_key_hex;
-    /// Empty = legacy async preimage seed; otherwise 64 hex chars = same 32-byte LDK/VLS node seed as the host.
-    string async_payments_root_seed_hex;
 };
 
 dictionary SdkOpenChannelRequest {

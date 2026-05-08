@@ -51,8 +51,8 @@ def ensure_regtest_available():
             )
 
 
-def ensure_dir(path: Path):
-    if RESET_DATA and path.exists():
+def ensure_dir(path: Path, *, reset: bool = True):
+    if reset and RESET_DATA and path.exists():
         shutil.rmtree(path)
     path.mkdir(parents=True, exist_ok=True)
 
@@ -103,10 +103,8 @@ def unlock_request(password: str) -> rln.SdkUnlockRequest:
 
 def unlock_with_attached_signer(
     node: rln.SdkNode,
-    bootstrap: rln.SdkExternalSignerBootstrap,
 ):
     node.unlock_with_attached_external_signer(
-        bootstrap,
         "user",
         "password",
         "localhost",
@@ -118,17 +116,20 @@ def unlock_with_attached_signer(
     )
 
 
-def make_native_signer() -> "rln.NativeExternalSigner":
-    seed_hex = os.getenv("RLN_TEST_NATIVE_SIGNER_SEED_HEX", "11" * 32)
+def make_native_signer(storage_dir: Path, *, reset: bool = True) -> "rln.NativeExternalSigner":
     network = os.getenv("RLN_TEST_NATIVE_SIGNER_NETWORK", "regtest")
     permissive_policy = os.getenv("RLN_TEST_NATIVE_SIGNER_PERMISSIVE_POLICY", "1") == "1"
-    return rln.NativeExternalSigner(seed_hex, network, permissive_policy)
+    ensure_dir(storage_dir, reset=reset)
+    return rln.NativeExternalSigner(str(storage_dir), network, permissive_policy)
 
 
-def make_native_signer_with_seed(seed_hex: str) -> "rln.NativeExternalSigner":
+def make_native_signer_with_dir(
+    storage_dir: Path, *, reset: bool = True
+) -> "rln.NativeExternalSigner":
     network = os.getenv("RLN_TEST_NATIVE_SIGNER_NETWORK", "regtest")
     permissive_policy = os.getenv("RLN_TEST_NATIVE_SIGNER_PERMISSIVE_POLICY", "1") == "1"
-    return rln.NativeExternalSigner(seed_hex, network, permissive_policy)
+    ensure_dir(storage_dir, reset=reset)
+    return rln.NativeExternalSigner(str(storage_dir), network, permissive_policy)
 
 
 def ensure_funded(node: rln.SdkNode, min_spendable_sat: int):
@@ -229,14 +230,14 @@ def wait_for_payment_succeeded(
 
 
 def run_regular_channel_flow_external_real():
-    signer = make_native_signer()
-    bootstrap = signer.bootstrap()
-
     data_root = REPO_ROOT / "target" / "uniffi" / "python-e2e" / "external-real-flow"
     node_a_dir = data_root / "node_a"
     node_b_dir = data_root / "node_b"
+    signer_dir = data_root / "signer_a"
     ensure_dir(node_a_dir)
     ensure_dir(node_b_dir)
+    signer = make_native_signer(signer_dir, reset=True)
+    bootstrap = signer.bootstrap()
 
     node_a_daemon_port = find_free_port()
     node_b_daemon_port = find_free_port()
@@ -328,6 +329,9 @@ def run_regular_channel_flow_external_real():
         node_a.shutdown()
         time.sleep(0.5)
         node_a = make_node(node_a_dir, node_a_daemon_port, node_a_peer_port)
+        # Keep the same in-process native signer instance across node restart.
+        # The VLS in-process transport uses an in-memory persister, so recreating the signer
+        # can lose enforcement state needed for subsequent commitment validation.
         node_a.unlock_with_native_external_signer(
             signer,
             "user",
@@ -375,14 +379,14 @@ def run_regular_channel_flow_external_real():
             pass
 def run_connection_loss_restore_real():
     ensure_regtest_available()
-    signer = make_native_signer()
-    bootstrap = signer.bootstrap()
-
     data_root = REPO_ROOT / "target" / "uniffi" / "python-e2e" / "external-real-loss"
     node_a_dir = data_root / "node_a"
     node_b_dir = data_root / "node_b"
+    signer_dir = data_root / "signer_a"
     ensure_dir(node_a_dir)
     ensure_dir(node_b_dir)
+    signer = make_native_signer(signer_dir, reset=True)
+    bootstrap = signer.bootstrap()
 
     node_a_daemon_port = find_free_port()
     node_b_daemon_port = find_free_port()
@@ -468,13 +472,15 @@ def run_connection_loss_restore_real():
         time.sleep(0.5)
         node_a = make_node(node_a_dir, node_a_daemon_port, node_a_peer_port)
         try:
-            unlock_with_attached_signer(node_a, bootstrap)
+            unlock_with_attached_signer(node_a)
             raise RuntimeError("expected unlock failure while signer unavailable")
         except Exception as e:
             print("expected signer-unavailable failure:", str(e))
 
+        # Reattach the same in-process signer instance (do not recreate it) for the same reason
+        # as in `regular-flow-real`: the in-memory VLS transport does not persist enforcement state.
         node_a.attach_native_external_signer(signer)
-        unlock_with_attached_signer(node_a, bootstrap)
+        unlock_with_attached_signer(node_a)
         wait_for_usable_channels([(node_a, 1), (node_b, 1)])
 
         inv_2 = node_b.ln_invoice(
@@ -513,12 +519,13 @@ def run_connection_loss_restore_real():
 
 def run_restart_with_mismatched_signer_real():
     ensure_regtest_available()
-    signer_a = make_native_signer_with_seed("11" * 32)
-    signer_b = make_native_signer_with_seed("22" * 32)
-
     data_root = REPO_ROOT / "target" / "uniffi" / "python-e2e" / "external-real-mismatch"
     node_dir = data_root / "node_a"
+    signer_a_dir = data_root / "signer_a"
+    signer_b_dir = data_root / "signer_b"
     ensure_dir(node_dir)
+    signer_a = make_native_signer_with_dir(signer_a_dir, reset=True)
+    signer_b = make_native_signer_with_dir(signer_b_dir, reset=True)
 
     node_daemon_port = find_free_port()
     node_peer_port = find_free_port()

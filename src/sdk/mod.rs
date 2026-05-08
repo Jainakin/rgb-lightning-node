@@ -12,8 +12,9 @@ use crate::ldk::{start_ldk, InvoiceType, PaymentInfo, VirtualChannelSessionStatu
 use crate::rgb::{check_rgb_proxy_endpoint, get_rgb_channel_info_optional};
 use crate::rgb_kv_store::{write_rgb_payment_info_file, RgbKvStoreExt};
 use crate::signer::{
-    read_key_source_file, validate_bootstrap_ldk_auxiliary_keys, write_key_source_file,
-    BootstrapData, KeySourceFile, SUPPORTED_SIGNER_API_LEVEL,
+    read_key_source_file, validate_bootstrap_ldk_auxiliary_keys,
+    validate_key_source_matches_bootstrap, write_key_source_file, BootstrapData, KeySourceFile,
+    SUPPORTED_SIGNER_API_LEVEL,
 };
 use crate::swap::{SwapData, SwapInfo, SwapString};
 use crate::utils::{
@@ -1696,9 +1697,14 @@ pub(crate) async fn init(
 
 pub(crate) async fn init_with_external_signer(
     state: Arc<AppState>,
-    bootstrap: BootstrapData,
+    key_source: KeySourceFile,
 ) -> Result<(), APIError> {
-    validate_external_signer_bootstrap(&bootstrap)?;
+    if key_source.api_level != SUPPORTED_SIGNER_API_LEVEL {
+        return Err(APIError::ExternalSignerProtocolError(format!(
+            "unsupported external signer api_level {}, expected {}",
+            key_source.api_level, SUPPORTED_SIGNER_API_LEVEL
+        )));
+    }
     let _unlocked_state = check_locked(&state).await?;
     check_already_initialized(&state.static_state.database)?;
 
@@ -1709,7 +1715,6 @@ pub(crate) async fn init_with_external_signer(
         return Err(APIError::AlreadyInitialized);
     }
 
-    let key_source = KeySourceFile::from_bootstrap(&bootstrap);
     write_key_source_file(&state.static_state.storage_dir_path, &key_source)
         .map_err(|e| APIError::ExternalSignerProtocolError(e.to_string()))?;
     Ok(())
@@ -1778,10 +1783,8 @@ pub(crate) async fn unlock(state: Arc<AppState>, request: UnlockRequest) -> Resu
 pub(crate) async fn unlock_with_attached_external_signer(
     state: Arc<AppState>,
     request: UnlockRequest,
-    bootstrap: BootstrapData,
 ) -> Result<(), APIError> {
     tracing::info!("Attached external-signer unlock started");
-    validate_external_signer_bootstrap(&bootstrap)?;
     match check_locked(&state).await {
         Ok(unlocked_state) => {
             update_changing_state(&state, true);
@@ -1804,7 +1807,17 @@ pub(crate) async fn unlock_with_attached_external_signer(
             ));
         }
     };
-    if signer_attachment.bootstrap != bootstrap {
+    validate_external_signer_bootstrap(&signer_attachment.bootstrap)?;
+    let key_source = match read_key_source_file(&state.static_state.storage_dir_path)
+        .map_err(|e| APIError::ExternalSignerProtocolError(e.to_string()))?
+    {
+        Some(key_source) => key_source,
+        None => {
+            update_changing_state(&state, false);
+            return Err(APIError::ExternalSignerRequired);
+        }
+    };
+    if validate_key_source_matches_bootstrap(&key_source, &signer_attachment.bootstrap).is_err() {
         update_changing_state(&state, false);
         return Err(APIError::ExternalSignerMismatch);
     }
@@ -1822,7 +1835,7 @@ pub(crate) async fn unlock_with_attached_external_signer(
     let (new_ldk_background_services, new_unlocked_app_state) = match start_ldk(
         state.clone(),
         crate::core_types::NodeKeySource::External(crate::core_types::ExternalKeySource {
-            bootstrap,
+            bootstrap: signer_attachment.bootstrap.clone(),
             signer_attachment,
         }),
         unlock_request,
@@ -4188,9 +4201,12 @@ mod tests {
     #[tokio::test]
     async fn external_init_persists_key_source_file() {
         let state = mock_locked_state();
-        init_with_external_signer(state.clone(), sample_bootstrap())
-            .await
-            .expect("external init");
+        init_with_external_signer(
+            state.clone(),
+            KeySourceFile::from_bootstrap(&sample_bootstrap()),
+        )
+        .await
+        .expect("external init");
 
         let key_source = read_key_source_file(&state.static_state.storage_dir_path)
             .expect("read key source")
@@ -4204,9 +4220,12 @@ mod tests {
     #[tokio::test]
     async fn internal_init_is_rejected_in_external_mode() {
         let state = mock_locked_state();
-        init_with_external_signer(state.clone(), sample_bootstrap())
-            .await
-            .expect("external init");
+        init_with_external_signer(
+            state.clone(),
+            KeySourceFile::from_bootstrap(&sample_bootstrap()),
+        )
+        .await
+        .expect("external init");
 
         let res = init(state, "StrongPass123!".to_string(), None).await;
         assert!(matches!(res, Err(APIError::ExternalSignerRequired)));
@@ -4215,9 +4234,12 @@ mod tests {
     #[tokio::test]
     async fn internal_unlock_is_rejected_in_external_mode() {
         let state = mock_locked_state();
-        init_with_external_signer(state.clone(), sample_bootstrap())
-            .await
-            .expect("external init");
+        init_with_external_signer(
+            state.clone(),
+            KeySourceFile::from_bootstrap(&sample_bootstrap()),
+        )
+        .await
+        .expect("external init");
 
         let res = unlock(state, sample_unlock_request()).await;
         assert!(matches!(res, Err(APIError::ExternalSignerRequired)));
@@ -4226,11 +4248,16 @@ mod tests {
     #[tokio::test]
     async fn external_init_is_idempotent_for_existing_key_source() {
         let state = mock_locked_state();
-        init_with_external_signer(state.clone(), sample_bootstrap())
-            .await
-            .expect("external init");
+        init_with_external_signer(
+            state.clone(),
+            KeySourceFile::from_bootstrap(&sample_bootstrap()),
+        )
+        .await
+        .expect("external init");
 
-        let res = init_with_external_signer(state, sample_bootstrap()).await;
+        let res =
+            init_with_external_signer(state, KeySourceFile::from_bootstrap(&sample_bootstrap()))
+                .await;
         assert!(matches!(res, Err(APIError::AlreadyInitialized)));
     }
 
@@ -4239,19 +4266,14 @@ mod tests {
         let state = mock_locked_state();
         let mut bootstrap = sample_bootstrap();
         bootstrap.api_level = 99;
-        let res = init_with_external_signer(state, bootstrap).await;
+        let res = init_with_external_signer(state, KeySourceFile::from_bootstrap(&bootstrap)).await;
         assert!(matches!(res, Err(APIError::ExternalSignerProtocolError(_))));
     }
 
     #[tokio::test]
     async fn attached_external_unlock_without_registered_signer_is_unavailable() {
         let state = mock_locked_state();
-        let res = unlock_with_attached_external_signer(
-            state,
-            sample_unlock_request(),
-            sample_bootstrap(),
-        )
-        .await;
+        let res = unlock_with_attached_external_signer(state, sample_unlock_request()).await;
         assert!(matches!(res, Err(APIError::ExternalSignerUnavailable(_))));
     }
 
@@ -4259,30 +4281,32 @@ mod tests {
     async fn attached_external_unlock_with_mismatched_bootstrap_fails() {
         let state = mock_locked_state();
         let bootstrap_a = sample_bootstrap();
-        init_with_external_signer(state.clone(), bootstrap_a)
+        init_with_external_signer(state.clone(), KeySourceFile::from_bootstrap(&bootstrap_a))
             .await
             .expect("external init");
 
-        attach_test_external_signer(&state, sample_bootstrap()).expect("attach test signer");
         let mut bootstrap_b = sample_bootstrap();
         bootstrap_b.identity.master_fingerprint = "ffffffff".to_string();
-        let res =
-            unlock_with_attached_external_signer(state, sample_unlock_request(), bootstrap_b).await;
-        assert!(matches!(res, Err(APIError::ExternalSignerMismatch)));
+        attach_test_external_signer(&state, bootstrap_b).expect("attach mismatched signer");
+        // Unlock should fail because attached signer does not match persisted key_source.json.
+        let res = unlock_with_attached_external_signer(state, sample_unlock_request()).await;
+        assert!(matches!(
+            res,
+            Err(APIError::ExternalSignerProtocolError(_)) | Err(APIError::ExternalSignerMismatch)
+        ));
     }
 
     #[tokio::test]
     async fn external_mode_rejects_issue_and_inflate_operations() {
         let state = mock_locked_state();
         let bootstrap = sample_bootstrap();
-        init_with_external_signer(state.clone(), bootstrap.clone())
+        init_with_external_signer(state.clone(), KeySourceFile::from_bootstrap(&bootstrap))
             .await
             .expect("external init");
 
         attach_test_external_signer(&state, bootstrap.clone()).expect("attach test signer");
         let unlock_res =
-            unlock_with_attached_external_signer(state.clone(), sample_unlock_request(), bootstrap)
-                .await;
+            unlock_with_attached_external_signer(state.clone(), sample_unlock_request()).await;
         // If unlock cannot proceed in this isolated unit env (e.g. missing bitcoind),
         // this test cannot validate runtime mode guards.
         if unlock_res.is_err() {

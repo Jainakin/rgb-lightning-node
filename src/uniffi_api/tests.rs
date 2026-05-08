@@ -30,12 +30,6 @@ mod uniffi_smoke_tests {
         assert!(matches!(payment, Err(RlnError::NotInitialized)));
         let swap = sdk_get_swap(lightning::types::payment::PaymentHash([0u8; 32]), true);
         assert!(matches!(swap, Err(RlnError::NotInitialized)));
-        let seed = [11u8; 32];
-        let (inb, peer, recv) =
-            signer_external::ldk_keys_manager_material::derive_ldk_keys_manager_auxiliary_secret_bytes(
-                &seed,
-            )
-            .expect("derive");
         let bootstrap = SdkExternalSignerBootstrap {
             node_id: "0279be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798"
                 .to_string(),
@@ -44,10 +38,6 @@ mod uniffi_smoke_tests {
             master_fingerprint: "00000000".to_string(),
             protocol_version: "1".to_string(),
             api_level: 1,
-            ldk_inbound_payment_key_hex: crate::signer::types::hex_encode_lower(&inb),
-            ldk_peer_storage_key_hex: crate::signer::types::hex_encode_lower(&peer),
-            ldk_receive_auth_key_hex: crate::signer::types::hex_encode_lower(&recv),
-            async_payments_root_seed_hex: crate::signer::types::hex_encode_lower(&seed),
         };
         let init_external = sdk_init_with_external_signer(bootstrap);
         assert!(matches!(init_external, Err(RlnError::NotInitialized)));

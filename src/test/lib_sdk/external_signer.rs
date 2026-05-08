@@ -18,10 +18,6 @@ fn clone_bootstrap(b: &SdkExternalSignerBootstrap) -> SdkExternalSignerBootstrap
         master_fingerprint: b.master_fingerprint.clone(),
         protocol_version: b.protocol_version.clone(),
         api_level: b.api_level,
-        ldk_inbound_payment_key_hex: b.ldk_inbound_payment_key_hex.clone(),
-        ldk_peer_storage_key_hex: b.ldk_peer_storage_key_hex.clone(),
-        ldk_receive_auth_key_hex: b.ldk_receive_auth_key_hex.clone(),
-        async_payments_root_seed_hex: b.async_payments_root_seed_hex.clone(),
     }
 }
 
@@ -76,13 +72,8 @@ fn attach_external_signer_host(
         .expect("attach external signer");
 }
 
-fn unlock_with_attached_external_signer(
-    node: &SdkNode,
-    bootstrap: &SdkExternalSignerBootstrap,
-    announce_alias: &str,
-) {
+fn unlock_with_attached_external_signer(node: &SdkNode, announce_alias: &str) {
     node.unlock_with_attached_external_signer(
-        clone_bootstrap(bootstrap),
         "user".to_string(),
         "password".to_string(),
         "localhost".to_string(),
@@ -100,9 +91,11 @@ fn env_lock() -> &'static Mutex<()> {
     LOCK.get_or_init(|| Mutex::new(()))
 }
 
-fn make_native_signer(seed_byte: u8) -> Arc<rgb_lightning_node::NativeExternalSigner> {
+fn make_native_signer(
+    storage_dir: &std::path::Path,
+) -> Arc<rgb_lightning_node::NativeExternalSigner> {
     rgb_lightning_node::NativeExternalSigner::new(
-        format!("{seed_byte:02x}").repeat(32),
+        storage_dir.display().to_string(),
         "regtest".to_string(),
         Some(true),
     )
@@ -121,8 +114,9 @@ fn external_init_unlock_and_restart_same_signer() {
     }
     fs::create_dir_all(&test_dir).expect("create lib_sdk test dir");
     let node_dir = test_dir.join("node_a");
+    let signer_dir = test_dir.join("signer_a");
 
-    let signer = make_native_signer(0x11);
+    let signer = make_native_signer(&signer_dir);
     let bootstrap = signer.bootstrap().expect("bootstrap");
 
     let node = make_node(&node_dir, NODE_A_DAEMON_PORT + 110, NODE_A_PEER_PORT + 110);
@@ -184,8 +178,10 @@ fn external_restart_with_mismatched_signer_fails_unlock() {
     }
     fs::create_dir_all(&test_dir).expect("create lib_sdk test dir");
     let node_dir = test_dir.join("node_a");
+    let signer_a_dir = test_dir.join("signer_a");
+    let signer_b_dir = test_dir.join("signer_b");
 
-    let signer_a = make_native_signer(0x11);
+    let signer_a = make_native_signer(&signer_a_dir);
     let node = make_node(&node_dir, NODE_A_DAEMON_PORT + 111, NODE_A_PEER_PORT + 111);
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         node.init_with_native_external_signer(signer_a.clone())
@@ -205,7 +201,7 @@ fn external_restart_with_mismatched_signer_fails_unlock() {
         node.shutdown();
         thread::sleep(Duration::from_millis(500));
 
-        let signer_b = make_native_signer(0x22);
+        let signer_b = make_native_signer(&signer_b_dir);
 
         let restarted = make_node(&node_dir, NODE_A_DAEMON_PORT + 111, NODE_A_PEER_PORT + 111);
         let err = restarted
@@ -247,7 +243,8 @@ fn external_signer_connection_loss_and_restore_mock() {
     fs::create_dir_all(&test_dir).expect("create lib_sdk test dir");
     let node_dir = test_dir.join("node_a");
 
-    let signer = make_native_signer(0x44);
+    let signer_dir = test_dir.join("signer_a");
+    let signer = make_native_signer(&signer_dir);
     let bootstrap = signer.bootstrap().expect("bootstrap");
     let host = Arc::new(TunableNativeSignerHost::new(signer));
 
@@ -256,7 +253,7 @@ fn external_signer_connection_loss_and_restore_mock() {
         node.init_with_external_signer(clone_bootstrap(&bootstrap))
             .expect("external init");
         attach_external_signer_host(&node, host.clone(), &bootstrap);
-        unlock_with_attached_external_signer(&node, &bootstrap, "RLN_external_conn_loss");
+        unlock_with_attached_external_signer(&node, "RLN_external_conn_loss");
 
         fund_and_create_utxos(&node, "node A mock");
         let self_addr = node.address().expect("node address").address;
@@ -313,8 +310,9 @@ fn external_signer_sign_rgb_psbt_failure_surfaces_on_send_btc_mock() {
     }
     fs::create_dir_all(&test_dir).expect("create lib_sdk test dir");
     let node_dir = test_dir.join("node_a");
+    let signer_dir = test_dir.join("signer_a");
 
-    let signer = make_native_signer(0x55);
+    let signer = make_native_signer(&signer_dir);
     let bootstrap = signer.bootstrap().expect("bootstrap");
     let host = Arc::new(TunableNativeSignerHost::new(signer));
 
@@ -323,7 +321,7 @@ fn external_signer_sign_rgb_psbt_failure_surfaces_on_send_btc_mock() {
         node.init_with_external_signer(clone_bootstrap(&bootstrap))
             .expect("external init");
         attach_external_signer_host(&node, host.clone(), &bootstrap);
-        unlock_with_attached_external_signer(&node, &bootstrap, "RLN_external_sign_rgb_fail");
+        unlock_with_attached_external_signer(&node, "RLN_external_sign_rgb_fail");
 
         fund_and_create_utxos(&node, "node A mock");
         let self_addr = node.address().expect("node address").address;

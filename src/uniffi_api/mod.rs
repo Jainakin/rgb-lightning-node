@@ -43,42 +43,36 @@ fn network_from_str(network: &str) -> Result<rgb_lib::BitcoinNetwork, RlnError> 
     }
 }
 
-fn bootstrap_from_uniffi(data: SdkExternalSignerBootstrap) -> crate::signer::BootstrapData {
+fn key_source_from_uniffi_bootstrap(
+    data: SdkExternalSignerBootstrap,
+) -> crate::signer::KeySourceFile {
     let api_level = if data.api_level == 0 {
         crate::signer::SUPPORTED_SIGNER_API_LEVEL
     } else {
         data.api_level
     };
-    crate::signer::BootstrapData {
-        identity: crate::signer::SignerIdentity {
-            node_id: data.node_id,
-            account_xpub_vanilla: data.account_xpub_vanilla,
-            account_xpub_colored: data.account_xpub_colored,
-            master_fingerprint: data.master_fingerprint,
-        },
+    crate::signer::KeySourceFile {
+        mode: crate::signer::key_source::EXTERNAL_SIGNER_MODE_V1.to_string(),
+        node_id: data.node_id,
+        account_xpub_vanilla: data.account_xpub_vanilla,
+        account_xpub_colored: data.account_xpub_colored,
+        master_fingerprint: data.master_fingerprint,
         protocol_version: data.protocol_version,
         api_level,
-        ldk_inbound_payment_key_hex: data.ldk_inbound_payment_key_hex,
-        ldk_peer_storage_key_hex: data.ldk_peer_storage_key_hex,
-        ldk_receive_auth_key_hex: data.ldk_receive_auth_key_hex,
-        async_payments_root_seed_hex: data.async_payments_root_seed_hex,
     }
 }
 
-fn attach_host_with_expected_bootstrap(
+fn attach_host_with_expected_key_source(
     state: &std::sync::Arc<crate::utils::AppState>,
     host: Arc<dyn ExternalSignerHost>,
-    expected: crate::signer::BootstrapData,
+    expected: crate::signer::KeySourceFile,
 ) -> Result<(), RlnError> {
     let transport: Arc<dyn crate::signer::ExternalSignerTransport> =
         Arc::new(UniffiExternalSignerTransport::new(host));
     let attachment =
         crate::ldk::attach_external_signer_transport(transport).map_err(state::map_api_error)?;
-    if attachment.bootstrap != expected {
-        return Err(state::map_api_error(
-            crate::error::APIError::ExternalSignerMismatch,
-        ));
-    }
+    crate::signer::validate_key_source_matches_bootstrap(&expected, &attachment.bootstrap)
+        .map_err(|_| state::map_api_error(crate::error::APIError::ExternalSignerMismatch))?;
     state.set_attached_external_signer(Some(attachment));
     Ok(())
 }
@@ -302,7 +296,7 @@ impl SdkNode {
         let state = self.handle.app_state();
         block_on_sdk(sdk::init_with_external_signer(
             state,
-            bootstrap_from_uniffi(bootstrap),
+            key_source_from_uniffi_bootstrap(bootstrap),
         ))?;
         Ok(())
     }
@@ -1375,8 +1369,8 @@ impl SdkNode {
         bootstrap: SdkExternalSignerBootstrap,
     ) -> Result<(), RlnError> {
         let state = self.handle.app_state();
-        let expected = bootstrap_from_uniffi(bootstrap);
-        attach_host_with_expected_bootstrap(&state, host, expected)
+        let expected = key_source_from_uniffi_bootstrap(bootstrap);
+        attach_host_with_expected_key_source(&state, host, expected)
     }
 
     pub fn detach_external_signer(&self) {
@@ -1386,7 +1380,6 @@ impl SdkNode {
     #[allow(clippy::too_many_arguments)] // Mirrors `UnlockRequest`; UniFFI keeps a flat argument list.
     pub fn unlock_with_attached_external_signer(
         &self,
-        bootstrap: SdkExternalSignerBootstrap,
         bitcoind_rpc_username: String,
         bitcoind_rpc_password: String,
         bitcoind_rpc_host: String,
@@ -1410,7 +1403,6 @@ impl SdkNode {
                 announce_addresses,
                 announce_alias,
             },
-            bootstrap_from_uniffi(bootstrap),
         ))?;
         Ok(())
     }
@@ -1431,9 +1423,9 @@ impl SdkNode {
         signer: Arc<NativeExternalSigner>,
     ) -> Result<(), RlnError> {
         let state = self.handle.app_state();
-        let expected = bootstrap_from_uniffi(signer.bootstrap()?);
+        let expected = key_source_from_uniffi_bootstrap(signer.bootstrap()?);
         let host: Arc<dyn ExternalSignerHost> = signer;
-        attach_host_with_expected_bootstrap(&state, host, expected)
+        attach_host_with_expected_key_source(&state, host, expected)
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -1450,9 +1442,7 @@ impl SdkNode {
         announce_alias: Option<String>,
     ) -> Result<(), RlnError> {
         self.attach_native_external_signer(signer.clone())?;
-        let bootstrap = signer.bootstrap()?;
         self.unlock_with_attached_external_signer(
-            bootstrap,
             bitcoind_rpc_username,
             bitcoind_rpc_password,
             bitcoind_rpc_host,

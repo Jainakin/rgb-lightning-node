@@ -3,10 +3,14 @@ use crate::signer::proto::{decode_signer_request, encode_signer_response};
 use anyhow::Context;
 use bitcoin::hex::FromHex;
 use bitcoin::Network;
+use rand::rngs::OsRng;
+use rand::RngCore;
 use signer_external::contract::{BootstrapData, ExternalSignerBackend, SignerRequest};
 use signer_external::vls_adapter::vls_real::RealVlsClient;
 use signer_external::vls_adapter::VlsSignerAdapter;
 use std::collections::HashMap;
+use std::fs;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use vls_protocol::msgs;
 use vls_protocol_client::{Error as VlsClientError, Transport};
@@ -56,7 +60,10 @@ impl InProcessVlsTransport {
         let config = lightning_signer::node::NodeConfig {
             network,
             key_derivation_style: KeyDerivationStyle::Ldk,
-            use_checkpoints: true,
+            // In-process native signer is a dev/test helper. Checkpoint validation in vls-core
+            // can panic on missing checkpoint state in some environments; keep it off here to
+            // avoid taking down the host process during E2E flows.
+            use_checkpoints: false,
             allow_deep_reorgs: true,
         };
         let node = Arc::new(lightning_signer::node::Node::new(
@@ -157,6 +164,8 @@ pub struct NativeExternalSigner {
     backend: Arc<dyn ExternalSignerBackend>,
 }
 
+const NATIVE_EXTERNAL_SIGNER_SEED_FILE: &str = "native_external_signer_seed.hex";
+
 impl NativeExternalSigner {
     fn parse_network(network: &str) -> Result<Network, RlnError> {
         match network.to_lowercase().as_str() {
@@ -174,6 +183,28 @@ impl NativeExternalSigner {
         Ok(seed)
     }
 
+    fn seed_file_path(storage_dir_path: &str) -> PathBuf {
+        Path::new(storage_dir_path).join(NATIVE_EXTERNAL_SIGNER_SEED_FILE)
+    }
+
+    fn encode_seed_hex(seed: &[u8; 32]) -> String {
+        seed.iter().map(|b| format!("{b:02x}")).collect()
+    }
+
+    fn load_or_create_seed(storage_dir_path: &str) -> Result<[u8; 32], RlnError> {
+        fs::create_dir_all(storage_dir_path).map_err(|_| RlnError::Internal)?;
+        let seed_path = Self::seed_file_path(storage_dir_path);
+        if seed_path.exists() {
+            let seed_hex = fs::read_to_string(&seed_path).map_err(|_| RlnError::Internal)?;
+            return Self::parse_seed_hex(seed_hex.trim());
+        }
+
+        let mut seed = [0u8; 32];
+        OsRng.fill_bytes(&mut seed);
+        fs::write(&seed_path, Self::encode_seed_hex(&seed)).map_err(|_| RlnError::Internal)?;
+        Ok(seed)
+    }
+
     fn map_bootstrap(data: BootstrapData) -> SdkExternalSignerBootstrap {
         SdkExternalSignerBootstrap {
             node_id: data.identity.node_id,
@@ -182,10 +213,6 @@ impl NativeExternalSigner {
             master_fingerprint: data.identity.master_fingerprint,
             protocol_version: data.protocol_version,
             api_level: data.api_level,
-            ldk_inbound_payment_key_hex: data.ldk_inbound_payment_key_hex,
-            ldk_peer_storage_key_hex: data.ldk_peer_storage_key_hex,
-            ldk_receive_auth_key_hex: data.ldk_receive_auth_key_hex,
-            async_payments_root_seed_hex: data.async_payments_root_seed_hex,
         }
     }
 }
@@ -194,12 +221,12 @@ impl NativeExternalSigner {
 impl NativeExternalSigner {
     #[uniffi::constructor]
     pub fn new(
-        seed_hex: String,
+        storage_dir_path: String,
         network: String,
         permissive_policy: Option<bool>,
     ) -> Result<Arc<Self>, RlnError> {
         let network = Self::parse_network(&network)?;
-        let seed = Self::parse_seed_hex(&seed_hex)?;
+        let seed = Self::load_or_create_seed(&storage_dir_path)?;
         let transport = Arc::new(
             InProcessVlsTransport::new(network, seed, permissive_policy.unwrap_or(true))
                 .context("native signer transport init failed")

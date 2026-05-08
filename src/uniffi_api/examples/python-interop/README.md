@@ -52,7 +52,6 @@ External signer E2E examples:
 1. Regular channel flow with real native external signer via UniFFI:
 
 ```sh
-export RLN_TEST_NATIVE_SIGNER_SEED_HEX="$(printf '11%.0s' {1..32})"
 RESET_DATA=1 \
 python3 src/uniffi_api/examples/python-interop/manual_py_external_signer_e2e.py \
   --scenario regular-flow-real
@@ -60,7 +59,8 @@ python3 src/uniffi_api/examples/python-interop/manual_py_external_signer_e2e.py 
 
 Note:
 - No HTTP endpoint is used in this flow.
-- Python constructs `NativeExternalSigner(...)` directly from the seed.
+- Python constructs `NativeExternalSigner(...)` from a signer storage directory.
+- The signer seed is created and persisted inside that signer directory.
 - The UniFFI flow now uses:
   - `init_with_native_external_signer(...)`
   - `unlock_with_native_external_signer(...)`
@@ -75,7 +75,6 @@ START_REGTEST=1 \
 Optional env overrides:
 
 ```sh
-export RLN_TEST_NATIVE_SIGNER_SEED_HEX="$(printf '22%.0s' {1..32})"
 export RLN_TEST_NATIVE_SIGNER_NETWORK="regtest"
 export RLN_TEST_NATIVE_SIGNER_PERMISSIVE_POLICY="1"
 ./scripts/ci/external_signer_real_e2e.sh
