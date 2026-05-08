@@ -17,8 +17,12 @@ Current lifecycle/threading model:
 Native external signer note:
 - `NativeExternalSigner` is a convenience in-process signer object exposed only in
   `uniffi,vls` builds generated from the compiled library.
-- It is storage-backed, not seed-backed: callers provide a signer storage
-  directory, and the signer creates or reloads its own persisted seed there.
+- It is **not** a production-grade seed store. Callers still pass a signer storage
+  directory for API compatibility.
+- The single constructor `NativeExternalSigner.new(...)` supports:
+  - ephemeral in-memory seed (default; no disk writes)
+  - encrypted seed persistence in the signer storage dir (provide `password`)
+  - host-provided in-memory seed (provide `seed_hex`, e.g. loaded from Android Keystore / iOS Keychain)
 - RLN init/unlock in external-signer mode still consumes bootstrap/attachment
   data, not mnemonic/seed phrases.
 

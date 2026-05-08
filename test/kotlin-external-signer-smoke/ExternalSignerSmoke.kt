@@ -26,6 +26,7 @@ fun main() {
     val storageRoot = repoRoot.resolve("target/uniffi/kotlin-external-signer-smoke/data")
     val storageDir = storageRoot.resolve("node")
     val signerStorageDir = storageRoot.resolve("signer")
+    val signerPassword = env("RLN_TEST_NATIVE_SIGNER_PASSWORD", "dev-only-not-secure")
     if (env("RESET_DATA", "1") == "1") {
         val dirFile = File(storageDir.toString())
         if (dirFile.exists()) {
@@ -39,7 +40,7 @@ fun main() {
     Files.createDirectories(storageDir)
     Files.createDirectories(signerStorageDir)
 
-    val signer = NativeExternalSigner(signerStorageDir.toString(), "regtest", true)
+    val signer = NativeExternalSigner(signerStorageDir.toString(), "regtest", true, null, signerPassword)
     val node =
         SdkNode.create(
             SdkInitRequest(

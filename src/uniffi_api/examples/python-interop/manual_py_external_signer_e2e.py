@@ -119,8 +119,11 @@ def unlock_with_attached_signer(
 def make_native_signer(storage_dir: Path, *, reset: bool = True) -> "rln.NativeExternalSigner":
     network = os.getenv("RLN_TEST_NATIVE_SIGNER_NETWORK", "regtest")
     permissive_policy = os.getenv("RLN_TEST_NATIVE_SIGNER_PERMISSIVE_POLICY", "1") == "1"
+    signer_password = os.getenv("RLN_TEST_NATIVE_SIGNER_PASSWORD", "dev-only-not-secure")
     ensure_dir(storage_dir, reset=reset)
-    return rln.NativeExternalSigner(str(storage_dir), network, permissive_policy)
+    return rln.NativeExternalSigner(
+        str(storage_dir), network, permissive_policy, None, signer_password
+    )
 
 
 def make_native_signer_with_dir(
@@ -128,8 +131,11 @@ def make_native_signer_with_dir(
 ) -> "rln.NativeExternalSigner":
     network = os.getenv("RLN_TEST_NATIVE_SIGNER_NETWORK", "regtest")
     permissive_policy = os.getenv("RLN_TEST_NATIVE_SIGNER_PERMISSIVE_POLICY", "1") == "1"
+    signer_password = os.getenv("RLN_TEST_NATIVE_SIGNER_PASSWORD", "dev-only-not-secure")
     ensure_dir(storage_dir, reset=reset)
-    return rln.NativeExternalSigner(str(storage_dir), network, permissive_policy)
+    return rln.NativeExternalSigner(
+        str(storage_dir), network, permissive_policy, None, signer_password
+    )
 
 
 def ensure_funded(node: rln.SdkNode, min_spendable_sat: int):
