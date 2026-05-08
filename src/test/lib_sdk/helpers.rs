@@ -284,14 +284,32 @@ pub(crate) fn ensure_funded(node: &SdkNode, min_spendable_sat: u64, node_name: &
 
 pub(crate) fn fund_and_create_utxos(node: &SdkNode, node_name: &str) {
     ensure_funded(node, 1, node_name);
-    node.createutxos(SdkCreateUtxosRequest {
-        up_to: false,
-        num: Some(CREATE_UTXOS_NUM),
-        size: None,
-        fee_rate: CREATE_UTXOS_FEE_RATE,
-        skip_sync: false,
-    })
-    .unwrap_or_else(|e| panic!("{node_name}: createutxos: {e:?}"));
+    // `createutxos` can be flaky in CI/regtest environments (races with sync/fee estimation);
+    // allow a few retries before failing the test.
+    let mut last_err = None;
+    for _ in 0..3 {
+        match node.createutxos(SdkCreateUtxosRequest {
+            up_to: false,
+            num: Some(CREATE_UTXOS_NUM),
+            size: None,
+            fee_rate: CREATE_UTXOS_FEE_RATE,
+            skip_sync: false,
+        }) {
+            Ok(_) => {
+                last_err = None;
+                break;
+            }
+            Err(e) => {
+                last_err = Some(e);
+                // Best-effort: sync and wait a bit, then retry.
+                let _ = node.sync();
+                sleep(Duration::from_millis(500));
+            }
+        }
+    }
+    if let Some(e) = last_err {
+        panic!("{node_name}: createutxos: {e:?}");
+    }
     mine(1);
     node.sync()
         .unwrap_or_else(|_| panic!("{node_name}: sync after createutxos"));
