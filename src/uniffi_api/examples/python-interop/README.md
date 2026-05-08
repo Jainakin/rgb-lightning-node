@@ -59,7 +59,7 @@ python3 src/uniffi_api/examples/python-interop/manual_py_external_signer_e2e.py 
 
 Note:
 - No HTTP endpoint is used in this flow.
-- Python constructs `NativeExternalSigner(...)` from a signer storage directory.
+- Python constructs `NativeExternalSigner(...)` from a fixed `seed_hex` (passed in-memory; no signer-side seed persistence in RLN).
 - The signer seed is created and persisted inside that signer directory.
 - The UniFFI flow now uses:
   - `init_with_native_external_signer(...)`

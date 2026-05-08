@@ -21,26 +21,20 @@ fun main() {
     val bitcoindPort = env("BITCOIND_RPC_PORT", "18443").toUShort()
     val indexerUrl = env("INDEXER_URL", "127.0.0.1:50001")
     val proxyEndpoint = env("PROXY_ENDPOINT", PROXY_ENDPOINT_LOCAL)
+    val seedHex = env("RLN_TEST_NATIVE_SIGNER_SEED_HEX", "11".repeat(32))
 
     val repoRoot = Paths.get("").toAbsolutePath().normalize()
     val storageRoot = repoRoot.resolve("target/uniffi/kotlin-external-signer-smoke/data")
     val storageDir = storageRoot.resolve("node")
-    val signerStorageDir = storageRoot.resolve("signer")
-    val signerPassword = env("RLN_TEST_NATIVE_SIGNER_PASSWORD", "dev-only-not-secure")
     if (env("RESET_DATA", "1") == "1") {
         val dirFile = File(storageDir.toString())
         if (dirFile.exists()) {
             dirFile.deleteRecursively()
         }
-        val signerDirFile = File(signerStorageDir.toString())
-        if (signerDirFile.exists()) {
-            signerDirFile.deleteRecursively()
-        }
     }
     Files.createDirectories(storageDir)
-    Files.createDirectories(signerStorageDir)
 
-    val signer = NativeExternalSigner(signerStorageDir.toString(), "regtest", true, null, signerPassword)
+    val signer = NativeExternalSigner(seedHex, "regtest", true)
     val node =
         SdkNode.create(
             SdkInitRequest(

@@ -19,15 +19,15 @@ final class SwiftExternalSignerSmokeTests: XCTestCase {
 
         let indexerUrl = env["INDEXER_URL"] ?? "127.0.0.1:50001"
         let proxyEndpoint = env["PROXY_ENDPOINT"] ?? "rpc://127.0.0.1:3000/json-rpc"
+        let seedHex = env["RLN_TEST_NATIVE_SIGNER_SEED_HEX"] ?? String(repeating: "11", count: 32)
 
         let storageDir = FileManager.default.temporaryDirectory
             .appendingPathComponent("swift-ext-signer-smoke-\(UUID().uuidString)", isDirectory: true)
-        let signerStorageDir = storageDir.appendingPathComponent("signer", isDirectory: true)
         try FileManager.default.createDirectory(at: storageDir, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: storageDir) }
 
         let signer = try NativeExternalSigner(
-            storageDirPath: signerStorageDir.path,
+            seedHex: seedHex,
             network: "regtest",
             permissivePolicy: true
         )

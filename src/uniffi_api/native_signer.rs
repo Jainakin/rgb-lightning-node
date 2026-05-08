@@ -3,15 +3,12 @@ use crate::signer::proto::{decode_signer_request, encode_signer_response};
 use anyhow::Context;
 use bitcoin::hex::FromHex;
 use bitcoin::Network;
-use magic_crypt::{new_magic_crypt, MagicCryptTrait};
 use rand::rngs::OsRng;
 use rand::RngCore;
 use signer_external::contract::{BootstrapData, ExternalSignerBackend, SignerRequest};
 use signer_external::vls_adapter::vls_real::RealVlsClient;
 use signer_external::vls_adapter::VlsSignerAdapter;
 use std::collections::HashMap;
-use std::fs;
-use std::path::Path;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use vls_protocol::msgs;
@@ -167,8 +164,6 @@ pub struct NativeExternalSigner {
 }
 
 impl NativeExternalSigner {
-    const ENCRYPTED_SEED_FILE: &'static str = "native_external_signer_seed.enc";
-
     fn parse_network(network: &str) -> Result<Network, RlnError> {
         match network.to_lowercase().as_str() {
             "mainnet" | "bitcoin" => Ok(Network::Bitcoin),
@@ -185,52 +180,10 @@ impl NativeExternalSigner {
         Ok(seed)
     }
 
-    fn seed_path(storage_dir_path: &str) -> PathBuf {
-        Path::new(storage_dir_path).join(Self::ENCRYPTED_SEED_FILE)
-    }
-
     fn random_seed() -> [u8; 32] {
         let mut seed = [0u8; 32];
         OsRng.fill_bytes(&mut seed);
         seed
-    }
-
-    fn load_or_create_encrypted_seed(
-        storage_dir_path: &str,
-        password: &str,
-    ) -> Result<[u8; 32], RlnError> {
-        fs::create_dir_all(storage_dir_path).map_err(|_| RlnError::Internal)?;
-        let path = Self::seed_path(storage_dir_path);
-        let mcrypt = new_magic_crypt!(password, 256);
-
-        if path.exists() {
-            let enc = fs::read_to_string(&path).map_err(|_| RlnError::Internal)?;
-            let seed_hex = mcrypt
-                .decrypt_base64_to_string(enc.trim().to_string())
-                .map_err(|_| RlnError::InvalidRequest)?;
-            return Self::parse_seed_hex(seed_hex.trim());
-        }
-
-        let seed = Self::random_seed();
-        let seed_hex: String = seed.iter().map(|b| format!("{b:02x}")).collect();
-        let enc = mcrypt.encrypt_str_to_base64(seed_hex);
-        write_restricted_text_file(&path, &enc)?;
-        Ok(seed)
-    }
-
-    fn signer_seed(
-        storage_dir_path: &str,
-        seed_hex: Option<String>,
-        password: Option<String>,
-    ) -> Result<[u8; 32], RlnError> {
-        match (seed_hex, password) {
-            (Some(seed_hex), None) => Self::parse_seed_hex(&seed_hex),
-            (None, Some(password)) => {
-                Self::load_or_create_encrypted_seed(storage_dir_path, &password)
-            }
-            (None, None) => Ok(Self::random_seed()),
-            (Some(_), Some(_)) => Err(RlnError::InvalidRequest),
-        }
     }
 
     fn map_bootstrap(data: BootstrapData) -> SdkExternalSignerBootstrap {
@@ -249,14 +202,14 @@ impl NativeExternalSigner {
 impl NativeExternalSigner {
     #[uniffi::constructor]
     pub fn new(
-        storage_dir_path: String,
+        seed_hex: String,
         network: String,
         permissive_policy: Option<bool>,
-        seed_hex: Option<String>,
-        password: Option<String>,
     ) -> Result<Arc<Self>, RlnError> {
         let network = Self::parse_network(&network)?;
-        let seed = Self::signer_seed(&storage_dir_path, seed_hex, password)?;
+        // Host must supply a stable 32-byte seed (e.g. loaded from Android Keystore / iOS Keychain)
+        // and pass it in-memory; this signer helper does not persist secrets.
+        let seed = Self::parse_seed_hex(&seed_hex)?;
         let transport = Arc::new(
             InProcessVlsTransport::new(network, seed, permissive_policy.unwrap_or(true))
                 .context("native signer transport init failed")
@@ -297,29 +250,5 @@ impl ExternalSignerHost for NativeExternalSigner {
             tracing::error!(error = %e, "native external signer response encode failed");
             RlnError::Internal
         })
-    }
-}
-
-fn write_restricted_text_file(path: &Path, value: &str) -> Result<(), RlnError> {
-    #[cfg(unix)]
-    {
-        use std::io::Write;
-        use std::os::unix::fs::OpenOptionsExt;
-        let mut f = fs::OpenOptions::new()
-            .create(true)
-            .truncate(true)
-            .write(true)
-            .mode(0o600)
-            .open(path)
-            .map_err(|_| RlnError::Internal)?;
-        f.write_all(value.as_bytes())
-            .map_err(|_| RlnError::Internal)?;
-        f.sync_all().map_err(|_| RlnError::Internal)?;
-        Ok(())
-    }
-
-    #[cfg(not(unix))]
-    {
-        fs::write(path, value).map_err(|_| RlnError::Internal)
     }
 }
