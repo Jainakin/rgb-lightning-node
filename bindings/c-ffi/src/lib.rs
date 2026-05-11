@@ -11,7 +11,7 @@ mod api;
 mod json_types;
 mod utils;
 
-use rgb_lightning_node::SdkNode;
+use rgb_lightning_node::{NativeExternalSigner, SdkNode};
 
 use std::{
     any::TypeId,
@@ -19,6 +19,7 @@ use std::{
     ffi::{c_char, c_void, CStr, CString},
     hash::{Hash, Hasher},
     ptr::null_mut,
+    sync::Arc,
 };
 
 // Re-exported so utils.rs can refer to it via `super::RlnError` without an
@@ -525,4 +526,85 @@ pub extern "C" fn rln_sdk_initialize(request_json: *const c_char) -> CResultStri
 #[unsafe(no_mangle)]
 pub extern "C" fn rln_sdk_shutdown() -> CResultString {
     api::sdk_global_shutdown().into()
+}
+
+// ---------------------------------------------------------------------------
+// External-signer surface
+// ---------------------------------------------------------------------------
+
+/// Drop a `NativeExternalSigner` handle previously returned by
+/// `rln_native_external_signer_new`. The underlying VLS signer state stays
+/// alive as long as RLN holds its own `Arc` clone (after attach/init); the
+/// caller is therefore safe to free their handle immediately after
+/// `rln_sdk_node_attach_native_external_signer` / `..._init_with_...` /
+/// `..._unlock_with_...` succeeds, even while the node is still running.
+#[unsafe(no_mangle)]
+pub extern "C" fn free_native_external_signer(obj: COpaqueStruct) {
+    unsafe {
+        let _ = Box::from_raw(obj.ptr as *mut Arc<NativeExternalSigner>);
+    }
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn rln_native_external_signer_new(
+    seed_hex: *const c_char,
+    network: *const c_char,
+    permissive_policy: bool,
+) -> CResult {
+    api::native_external_signer_new(seed_hex, network, permissive_policy).into()
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn rln_native_external_signer_bootstrap(
+    signer: &COpaqueStruct,
+) -> CResultString {
+    api::native_external_signer_bootstrap(signer).into()
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn rln_sdk_node_init_with_native_external_signer(
+    node: &COpaqueStruct,
+    signer: &COpaqueStruct,
+) -> CResultString {
+    api::sdk_node_init_with_native_external_signer(node, signer).into()
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn rln_sdk_node_attach_native_external_signer(
+    node: &COpaqueStruct,
+    signer: &COpaqueStruct,
+) -> CResultString {
+    api::sdk_node_attach_native_external_signer(node, signer).into()
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn rln_sdk_node_unlock_with_native_external_signer(
+    node: &COpaqueStruct,
+    signer: &COpaqueStruct,
+    request_json: *const c_char,
+) -> CResultString {
+    api::sdk_node_unlock_with_native_external_signer(node, signer, request_json).into()
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn rln_sdk_node_init_with_external_signer(
+    node: &COpaqueStruct,
+    bootstrap_json: *const c_char,
+) -> CResultString {
+    api::sdk_node_init_with_external_signer(node, bootstrap_json).into()
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn rln_sdk_node_detach_external_signer(
+    node: &COpaqueStruct,
+) -> CResultString {
+    api::sdk_node_detach_external_signer(node).into()
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn rln_sdk_node_unlock_with_attached_external_signer(
+    node: &COpaqueStruct,
+    request_json: *const c_char,
+) -> CResultString {
+    api::sdk_node_unlock_with_attached_external_signer(node, request_json).into()
 }

@@ -1,5 +1,8 @@
 use super::*;
 
+use rgb_lightning_node::NativeExternalSigner;
+use std::sync::Arc;
+
 #[derive(Debug, thiserror::Error)]
 pub(crate) enum Error {
     #[error("Error converting JSON: {0}")]
@@ -60,6 +63,7 @@ pub(crate) trait CReturnType: Sized + 'static {
     }
 }
 impl CReturnType for SdkNode {}
+impl CReturnType for Arc<NativeExternalSigner> {}
 
 impl<T: 'static, E> From<Result<T, E>> for CResult
 where
@@ -138,4 +142,10 @@ pub(crate) fn convert_optional_string(ptr: *const c_char) -> Option<String> {
 
 pub(crate) fn require_handle(node: &COpaqueStruct) -> Result<&mut SdkNode, Error> {
     SdkNode::from_opaque(node)
+}
+
+pub(crate) fn require_signer(
+    signer: &COpaqueStruct,
+) -> Result<&mut Arc<NativeExternalSigner>, Error> {
+    <Arc<NativeExternalSigner>>::from_opaque(signer)
 }

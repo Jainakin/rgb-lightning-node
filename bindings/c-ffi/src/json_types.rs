@@ -28,8 +28,9 @@ use rgb_lightning_node::{
     SdkMakerInitRequest, SdkMakerInitResponse, SdkOpenChannelRequest, SdkOpenChannelResponse,
     SdkPostAssetMediaRequest, SdkPostAssetMediaResponse, SdkRefreshTransfersRequest,
     SdkRgbInvoiceRequest, SdkRgbInvoiceResponse, SdkSendBtcRequest, SdkSendBtcResponse,
-    SdkSendOnionMessageRequest, SdkSendPaymentRequest, SdkSendPaymentResponse, SdkTakerRequest,
-    SdkUnlockRequest, SendRgbRequest, SendRgbResponse, AssetRecipients, RgbRecipient,
+    SdkExternalSignerBootstrap, SdkSendOnionMessageRequest, SdkSendPaymentRequest,
+    SdkSendPaymentResponse, SdkTakerRequest, SdkUnlockRequest, SendRgbRequest, SendRgbResponse,
+    AssetRecipients, RgbRecipient,
     SignMessageResponse, Swap, SwapList, SwapStatus, Token, TokenLight, Transaction,
     TransactionType, Transfer, TransferTransportEndpoint, TransportEndpoint, Txid, Unspent, Utxo,
     WitnessData,
@@ -120,6 +121,10 @@ pub(crate) struct JsonSdkInitRequest {
     pub enable_virtual_channels_v0: Option<bool>,
     #[serde(default)]
     pub virtual_peer_pubkeys: Option<Vec<String>>,
+    #[serde(default)]
+    pub lsp_base_url: Option<String>,
+    #[serde(default)]
+    pub lsp_bearer_token: Option<String>,
 }
 
 impl TryFrom<JsonSdkInitRequest> for SdkInitRequest {
@@ -137,6 +142,8 @@ impl TryFrom<JsonSdkInitRequest> for SdkInitRequest {
             max_media_upload_size_mb: j.max_media_upload_size_mb,
             enable_virtual_channels_v0: j.enable_virtual_channels_v0,
             virtual_peer_pubkeys,
+            lsp_base_url: j.lsp_base_url,
+            lsp_bearer_token: j.lsp_bearer_token,
         })
     }
 }
@@ -170,6 +177,65 @@ impl From<JsonSdkUnlockRequest> for SdkUnlockRequest {
             proxy_endpoint: j.proxy_endpoint,
             announce_addresses: j.announce_addresses,
             announce_alias: j.announce_alias,
+        }
+    }
+}
+
+// External-signer unlock variant: same shape as `JsonSdkUnlockRequest` but
+// without `password` — in external-signer mode the seed never reaches RLN
+// and there is no encrypted-mnemonic blob to unlock with a password.
+#[derive(Debug, Deserialize)]
+pub(crate) struct JsonSdkExternalUnlockRequest {
+    pub bitcoind_rpc_username: String,
+    pub bitcoind_rpc_password: String,
+    pub bitcoind_rpc_host: String,
+    pub bitcoind_rpc_port: u16,
+    #[serde(default)]
+    pub indexer_url: Option<String>,
+    #[serde(default)]
+    pub proxy_endpoint: Option<String>,
+    #[serde(default)]
+    pub announce_addresses: Vec<String>,
+    #[serde(default)]
+    pub announce_alias: Option<String>,
+}
+
+// Mirror of `SdkExternalSignerBootstrap` carrying the same fields. Used for
+// both directions: native-signer output (Serialize) and host-implemented
+// signer input (Deserialize, when the caller wants to pass a raw bootstrap
+// dict to `init_with_external_signer`).
+#[derive(Debug, Deserialize, Serialize)]
+pub(crate) struct JsonSdkExternalSignerBootstrap {
+    pub node_id: String,
+    pub account_xpub_vanilla: String,
+    pub account_xpub_colored: String,
+    pub master_fingerprint: String,
+    pub protocol_version: String,
+    pub api_level: u32,
+}
+
+impl From<SdkExternalSignerBootstrap> for JsonSdkExternalSignerBootstrap {
+    fn from(b: SdkExternalSignerBootstrap) -> Self {
+        Self {
+            node_id: b.node_id,
+            account_xpub_vanilla: b.account_xpub_vanilla,
+            account_xpub_colored: b.account_xpub_colored,
+            master_fingerprint: b.master_fingerprint,
+            protocol_version: b.protocol_version,
+            api_level: b.api_level,
+        }
+    }
+}
+
+impl From<JsonSdkExternalSignerBootstrap> for SdkExternalSignerBootstrap {
+    fn from(j: JsonSdkExternalSignerBootstrap) -> Self {
+        Self {
+            node_id: j.node_id,
+            account_xpub_vanilla: j.account_xpub_vanilla,
+            account_xpub_colored: j.account_xpub_colored,
+            master_fingerprint: j.master_fingerprint,
+            protocol_version: j.protocol_version,
+            api_level: j.api_level,
         }
     }
 }

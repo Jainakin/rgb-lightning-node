@@ -29,6 +29,14 @@ struct CResult {
 
 extern "C" {
 
+/// Drop a `NativeExternalSigner` handle previously returned by
+/// `rln_native_external_signer_new`. The underlying VLS signer state stays
+/// alive as long as RLN holds its own `Arc` clone (after attach/init); the
+/// caller is therefore safe to free their handle immediately after
+/// `rln_sdk_node_attach_native_external_signer` / `..._init_with_...` /
+/// `..._unlock_with_...` succeeds, even while the node is still running.
+void free_native_external_signer(COpaqueStruct obj);
+
 void free_sdk_node(COpaqueStruct obj);
 
 CResultString rln_address(const COpaqueStruct *node);
@@ -112,6 +120,12 @@ CResultString rln_maker_execute(const COpaqueStruct *node, const char *request_j
 
 CResultString rln_maker_init(const COpaqueStruct *node, const char *request_json);
 
+CResultString rln_native_external_signer_bootstrap(const COpaqueStruct *signer);
+
+CResult rln_native_external_signer_new(const char *seed_hex,
+                                       const char *network,
+                                       bool permissive_policy);
+
 CResultString rln_network_info(const COpaqueStruct *node);
 
 CResultString rln_node_info(const COpaqueStruct *node);
@@ -126,15 +140,33 @@ CResultString rln_rgb_invoice(const COpaqueStruct *node, const char *request_jso
 
 CResultString rln_sdk_initialize(const char *request_json);
 
+CResultString rln_sdk_node_attach_native_external_signer(const COpaqueStruct *node,
+                                                         const COpaqueStruct *signer);
+
+CResultString rln_sdk_node_detach_external_signer(const COpaqueStruct *node);
+
 CResultString rln_sdk_node_init(const COpaqueStruct *node,
                                 const char *password,
                                 const char *mnemonic_opt);
+
+CResultString rln_sdk_node_init_with_external_signer(const COpaqueStruct *node,
+                                                     const char *bootstrap_json);
+
+CResultString rln_sdk_node_init_with_native_external_signer(const COpaqueStruct *node,
+                                                            const COpaqueStruct *signer);
 
 CResult rln_sdk_node_new(const char *request_json);
 
 CResultString rln_sdk_node_shutdown(const COpaqueStruct *node);
 
 CResultString rln_sdk_node_unlock(const COpaqueStruct *node, const char *request_json);
+
+CResultString rln_sdk_node_unlock_with_attached_external_signer(const COpaqueStruct *node,
+                                                                const char *request_json);
+
+CResultString rln_sdk_node_unlock_with_native_external_signer(const COpaqueStruct *node,
+                                                              const COpaqueStruct *signer,
+                                                              const char *request_json);
 
 CResultString rln_sdk_shutdown();
 
