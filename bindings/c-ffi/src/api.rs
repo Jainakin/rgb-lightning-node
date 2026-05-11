@@ -5,14 +5,15 @@
 
 use std::ffi::c_char;
 use std::str::FromStr;
+use std::sync::Arc;
 
 use hex::DisplayHex;
 use hex::FromHex;
 use rgb_lightning_node as rln;
-use rgb_lightning_node::SdkNode;
+use rgb_lightning_node::{NativeExternalSigner, SdkNode};
 
 use crate::json_types::*;
-use crate::utils::{convert_optional_string, ptr_to_string, require_handle, Error};
+use crate::utils::{convert_optional_string, ptr_to_string, require_handle, require_signer, Error};
 use crate::COpaqueStruct;
 
 // ---------------------------------------------------------------------------
@@ -612,5 +613,124 @@ pub(crate) fn sdk_global_initialize(request_json: *const c_char) -> Result<Strin
 
 pub(crate) fn sdk_global_shutdown() -> Result<String, Error> {
     rln::sdk_shutdown();
+    ok_void()
+}
+
+// ---------------------------------------------------------------------------
+// External-signer surface
+// ---------------------------------------------------------------------------
+//
+// Two flavours are supported:
+//
+//   1. Native signer (`NativeExternalSigner`) — RLN owns an in-process VLS
+//      signer seeded from a host-supplied 32-byte seed. Suits the WDK shape:
+//      the secret manager hands us the seed once at unlock-time and RLN
+//      derives keys without persisting the seed.
+//
+//   2. Foreign-implemented signer (host passes bootstrap dict only) — kept
+//      for parity with the UniFFI surface. The actual `ExternalSignerHost`
+//      callback isn't exposed through this C FFI yet (would require a
+//      function-pointer transport for VLS messages); calling
+//      `sdk_node_unlock_with_attached_external_signer` without first attaching
+//      one through some other path will fail.
+
+pub(crate) fn native_external_signer_new(
+    seed_hex: *const c_char,
+    network: *const c_char,
+    permissive_policy: bool,
+) -> Result<Arc<NativeExternalSigner>, Error> {
+    let seed_hex = ptr_to_string(seed_hex);
+    let network = ptr_to_string(network);
+    Ok(NativeExternalSigner::new(
+        seed_hex,
+        network,
+        Some(permissive_policy),
+    )?)
+}
+
+pub(crate) fn native_external_signer_bootstrap(
+    signer: &COpaqueStruct,
+) -> Result<String, Error> {
+    let signer = require_signer(signer)?;
+    let bootstrap = signer.bootstrap()?;
+    json(JsonSdkExternalSignerBootstrap::from(bootstrap))
+}
+
+pub(crate) fn sdk_node_init_with_native_external_signer(
+    node: &COpaqueStruct,
+    signer: &COpaqueStruct,
+) -> Result<String, Error> {
+    let node = require_handle(node)?;
+    let signer = require_signer(signer)?;
+    node.init_with_native_external_signer(Arc::clone(signer))?;
+    ok_void()
+}
+
+pub(crate) fn sdk_node_attach_native_external_signer(
+    node: &COpaqueStruct,
+    signer: &COpaqueStruct,
+) -> Result<String, Error> {
+    let node = require_handle(node)?;
+    let signer = require_signer(signer)?;
+    node.attach_native_external_signer(Arc::clone(signer))?;
+    ok_void()
+}
+
+pub(crate) fn sdk_node_unlock_with_native_external_signer(
+    node: &COpaqueStruct,
+    signer: &COpaqueStruct,
+    request_json: *const c_char,
+) -> Result<String, Error> {
+    let node = require_handle(node)?;
+    let signer = require_signer(signer)?;
+    let r: JsonSdkExternalUnlockRequest = parse_req(request_json)?;
+    node.unlock_with_native_external_signer(
+        Arc::clone(signer),
+        r.bitcoind_rpc_username,
+        r.bitcoind_rpc_password,
+        r.bitcoind_rpc_host,
+        r.bitcoind_rpc_port,
+        r.indexer_url,
+        r.proxy_endpoint,
+        r.announce_addresses,
+        r.announce_alias,
+    )?;
+    ok_void()
+}
+
+pub(crate) fn sdk_node_init_with_external_signer(
+    node: &COpaqueStruct,
+    bootstrap_json: *const c_char,
+) -> Result<String, Error> {
+    let node = require_handle(node)?;
+    let b: JsonSdkExternalSignerBootstrap = parse_req(bootstrap_json)?;
+    node.init_with_external_signer(b.into())?;
+    ok_void()
+}
+
+pub(crate) fn sdk_node_detach_external_signer(
+    node: &COpaqueStruct,
+) -> Result<String, Error> {
+    let node = require_handle(node)?;
+    node.detach_external_signer();
+    ok_void()
+}
+
+pub(crate) fn sdk_node_unlock_with_attached_external_signer(
+    node: &COpaqueStruct,
+    request_json: *const c_char,
+) -> Result<String, Error> {
+    let node = require_handle(node)?;
+    let r: JsonSdkExternalUnlockRequest = parse_req(request_json)?;
+    node.unlock_with_attached_external_signer(
+        r.bitcoind_rpc_username,
+        r.bitcoind_rpc_password,
+        r.bitcoind_rpc_host,
+        r.bitcoind_rpc_port,
+        r.indexer_url,
+        r.proxy_endpoint,
+        r.announce_addresses,
+        r.announce_alias,
+    )?;
     ok_void()
 }

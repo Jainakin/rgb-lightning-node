@@ -11,7 +11,7 @@ crate-type = ["staticlib"]
 name = "rlncffi"
 
 [dependencies]
-rgb-lightning-node = { path = "../..", features = ["uniffi"] }
+rgb-lightning-node = { path = "../..", features = ["uniffi", "vls"] }
 # Direct deps on `lightning` and `lightning-invoice` so we can construct the
 # typed wrappers (`PaymentHash`, `ChannelId`, `Bolt11Invoice`) by their real
 # crate paths — `rgb_lightning_node::PaymentHash` etc. are type aliases and
