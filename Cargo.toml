@@ -6,7 +6,18 @@ rust-version = "1.88.0"
 
 [lib]
 name = "rgb_lightning_node"
-crate-type = ["lib", "staticlib", "cdylib"]
+# `cdylib` intentionally omitted on this working branch: when cargo
+# cross-compiles this lib for iOS triples (transitively, via the c-ffi
+# sub-crate building the parent as a path dep), the cdylib link step pulls
+# in `aws-lc-sys` and fails with
+#   Undefined symbols for architecture arm64: ___chkstk_darwin
+# The symbol lives in the iOS runtime and isn't satisfied at static link
+# time. The bare native addon consumer (rgb-lightning-node-bare) only
+# needs the staticlib output, so dropping cdylib here unblocks
+# `cargo rustc --target aarch64-apple-ios --crate-type staticlib` while
+# staying compatible with all other build paths. Keep this local until
+# upstream finds a cleaner fix.
+crate-type = ["lib", "staticlib"]
 
 [features]
 default = []
