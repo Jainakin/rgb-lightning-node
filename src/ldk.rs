@@ -2872,7 +2872,7 @@ pub(crate) async fn start_ldk(
                 .into_extended_key()
                 .expect("a valid key should have been provided");
             let master_xprv = &xkey
-                .into_xprv(network.into())
+                .into_xprv(network)
                 .expect("should be possible to get an extended private key");
             let xprv: Xpriv = master_xprv
                 .derive_priv(&Secp256k1_30::new(), &ChildNumber::Hardened { index: 535 })

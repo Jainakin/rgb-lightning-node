@@ -146,6 +146,18 @@ UniFFI support adds a required manual sync checklist when upstream changes:
    - `.github/workflows/test.yaml`
    - `.github/workflows/sdk-e2e.yaml`
    - `.github/workflows/uniffi-artifacts.yaml`
+5. For SDK release bundles and publishing:
+   - run `.github/workflows/release-sdk.yaml`
+   - set workflow input `version` (for example `0.4.0-beta.1`)
+   - configure Central Publisher + GPG secrets before enabling publishing:
+     - `MAVENCENTRAL_USERNAME`
+     - `MAVENCENTRAL_PASSWORD`
+     - `GPG_SECRET_KEY` (ASCII-armored private key block)
+     - `GPG_KEY_NAME` (GPG key id)
+     - `GPG_PASSPHRASE`
+   - optional repository variables for coordinates:
+     - `MAVEN_GROUP_ID` (default `org.utexo`)
+     - `MAVEN_ARTIFACT_ID` (default `rgb-lightning-node-android`)
 
 ## Main code changes in `uniffi_api/mod.rs`
 

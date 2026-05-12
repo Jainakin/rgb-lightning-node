@@ -5060,6 +5060,7 @@ dependencies = [
 [[package]]
 name = "signer-external"
 version = "0.1.0-alpha"
+source = "git+https://github.com/rmn-boiko/rln-external-signer.git?branch=feat%2Frgb-compatibility#2456b67b5c6c0ad10f823791199d270e4c34bb14"
 dependencies = [
  "base64 0.22.1",
  "bitcoin",
