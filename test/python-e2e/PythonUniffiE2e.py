@@ -393,10 +393,12 @@ def wait_for_ln_balance(node: rln.SdkNode, asset_id, expected: int, timeout_sec:
     deadline = time.time() + timeout_sec
     last_balance = 0
     while time.time() < deadline:
+        node.sync()
         balance = asset_balance_offchain_outbound(node, asset_id)
         last_balance = balance
         if balance == expected:
             return
+        node.refreshtransfers(rln.SdkRefreshTransfersRequest(skip_sync=False))
         time.sleep(1)
     raise RuntimeError(
         "offchain_outbound balance did not become "

@@ -371,11 +371,13 @@ private fun waitForLnBalance(node: SdkNode, assetId: ContractId, expected: ULong
     val deadline = System.currentTimeMillis() + timeoutSec * 1000L
     var lastBalance = 0uL
     while (System.currentTimeMillis() < deadline) {
+        node.sync()
         val balance = assetBalanceOffchainOutbound(node, assetId)
         lastBalance = balance
         if (balance == expected) {
             return
         }
+        node.refreshtransfers(SdkRefreshTransfersRequest(skipSync = false))
         Thread.sleep(1000L)
     }
     error("offchain_outbound balance did not become expected=$expected actual=$lastBalance assetId=$assetId after ${timeoutSec}s")

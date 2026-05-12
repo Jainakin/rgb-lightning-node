@@ -628,10 +628,14 @@ pub(crate) fn wait_for_ln_balance(
 ) {
     let deadline = Instant::now() + timeout;
     loop {
+        node.sync()
+            .expect("node sync while waiting for offchain_outbound balance");
         let balance = asset_balance_offchain_outbound(node, asset_id);
         if balance == expected_balance {
             return;
         }
+        node.refreshtransfers(SdkRefreshTransfersRequest { skip_sync: false })
+            .expect("refreshtransfers while waiting for offchain_outbound balance");
         assert!(
             Instant::now() < deadline,
             "offchain_outbound balance ({balance}) did not become {expected_balance}"
