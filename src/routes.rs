@@ -3801,6 +3801,8 @@ pub(crate) async fn open_channel(
             if !is_virtual_open {
                 let mut fake_p2wsh: [u8; 34] = [0; 34];
                 fake_p2wsh[1] = 32;
+                fake_p2wsh[2..34]
+                    .copy_from_slice(&unlocked_state.entropy_source.get_secure_random_bytes());
                 let script_buf = ScriptBuf::from_bytes(fake_p2wsh.to_vec());
                 let recipient_id = recipient_id_from_script_buf(script_buf, state.static_state.network);
                 let asset_id = contract_id.to_string();
@@ -4327,12 +4329,17 @@ pub(crate) async fn send_payment(
                 );
             }
 
+            let bolt11_retry = if rgb_payment.is_some() {
+                Retry::Timeout(Duration::from_secs(120))
+            } else {
+                Retry::Timeout(Duration::from_secs(10))
+            };
             match unlocked_state.channel_manager.pay_for_bolt11_invoice(
                 &invoice,
                 payment_id,
                 Some(amt_msat),
                 RouteParametersConfig::default(),
-                Retry::Timeout(Duration::from_secs(10)),
+                bolt11_retry,
             ) {
                 Ok(_) => {
                     let payee_pubkey = invoice.recover_payee_pub_key();

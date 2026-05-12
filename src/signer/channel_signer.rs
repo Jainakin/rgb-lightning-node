@@ -1,3 +1,11 @@
+//! LDK `ChannelSigner` backed by an attached external process.
+//!
+//! **RGB holder validate (Phase D):** `validate_holder_commitment_with_backend` serializes the built
+//! holder commitment tx into `commitment_unsigned_tx_hex` when
+//! [`lightning::rgb_utils::is_tx_colored`] is true, so the signer can run VLS `ValidateCommitmentTx`
+//! on the same bytes the node holds. Vanilla (non-colored) commitments omit the field (phase-2
+//! summary path). Counterparty commitment signing still rejects colored txs until VLS rebuild
+//! matches RGB wire layout for that operation.
 use super::types::{
     ChannelPublicKeys, ExternalChannelHtlc, ExternalChannelOp, ExternalChannelRequest,
     ExternalSignerRequest, ExternalSignerResponse, RlnSignerError,
@@ -17,12 +25,17 @@ use lightning::ln::chan_utils::{
 };
 use lightning::ln::channel_keys::{DelayedPaymentBasepoint, HtlcBasepoint, RevocationBasepoint};
 use lightning::ln::msgs::UnsignedChannelAnnouncement;
+use lightning::rgb_utils::{
+    holder_validate_install_psbt_output_witness_scripts_hex,
+    holder_validate_take_psbt_output_witness_scripts_hex, is_tx_colored,
+};
 use lightning::sign::ecdsa::EcdsaChannelSigner;
 use lightning::sign::{ChannelSigner, HTLCDescriptor};
 use lightning::types::features::ChannelTypeFeatures;
 use lightning::types::payment::PaymentPreimage;
 use lightning::util::ser::Writeable;
-use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
 
 const INITIAL_COMMITMENT_NUMBER: u64 = (1u64 << 48) - 1;
 
@@ -31,9 +44,44 @@ pub(crate) struct ExternalChannelSigner {
     backend: Arc<dyn ExternalSignerBackend>,
     channel_keys_id_hex: String,
     channel_pubkeys: ChannelPublicKeys,
+    setup_complete: Arc<AtomicBool>,
+    deferred_initial_holder_validation: Arc<Mutex<Option<DeferredInitialHolderValidation>>>,
+}
+
+#[derive(Clone)]
+struct DeferredInitialHolderValidation {
+    commitment_number: u64,
+    to_broadcaster_value_sat: u64,
+    to_countersignatory_value_sat: u64,
+    feerate_per_kw: u32,
+    nondust_htlcs: Vec<HTLCOutputInCommitment>,
+    counterparty_sig: Signature,
+    counterparty_htlc_sigs: Vec<Signature>,
+    commitment_unsigned_tx_hex: Option<String>,
+    commitment_psbt_output_witness_scripts_hex: Option<Vec<String>>,
 }
 
 impl ExternalChannelSigner {
+    fn derive_initial_push_value_msat(
+        &self,
+        channel_parameters: &ChannelTransactionParameters,
+    ) -> Option<u64> {
+        let pending = self
+            .deferred_initial_holder_validation
+            .lock()
+            .ok()?
+            .clone()?;
+        if pending.commitment_number != 0 || !pending.nondust_htlcs.is_empty() {
+            return None;
+        }
+        let pushed_sat = if channel_parameters.is_outbound_from_holder {
+            pending.to_countersignatory_value_sat
+        } else {
+            pending.to_broadcaster_value_sat
+        };
+        pushed_sat.checked_mul(1000)
+    }
+
     fn channel_type_kind(features: &ChannelTypeFeatures) -> u8 {
         if features.supports_anchors_zero_fee_htlc_tx() {
             2
@@ -80,8 +128,12 @@ impl ExternalChannelSigner {
             channel_keys_id = %self.channel_keys_id_hex,
             funding_txid = %funding_outpoint.txid,
             funding_vout = funding_outpoint.index,
+            derived_push_value_msat = ?self.derive_initial_push_value_msat(channel_parameters),
             "external signer setup_channel request"
         );
+        let push_value_msat = self
+            .derive_initial_push_value_msat(channel_parameters)
+            .unwrap_or(0);
         let resp =
             self.backend
                 .call(ExternalSignerRequest::Channel(ExternalChannelRequest::Op {
@@ -89,7 +141,7 @@ impl ExternalChannelSigner {
                     op: ExternalChannelOp::SetupChannel {
                         is_outbound: channel_parameters.is_outbound_from_holder,
                         channel_value_satoshis: channel_parameters.channel_value_satoshis,
-                        push_value_msat: 0,
+                        push_value_msat,
                         funding_txid_hex: funding_outpoint.txid.to_string(),
                         funding_vout: funding_outpoint.index,
                         holder_selected_contest_delay: channel_parameters
@@ -111,7 +163,10 @@ impl ExternalChannelSigner {
         match resp {
             ExternalSignerResponse::Channel(
                 super::types::ExternalChannelResponse::SetupComplete,
-            ) => Ok(()),
+            ) => {
+                self.setup_complete.store(true, Ordering::Release);
+                Ok(())
+            }
             other => Err(RlnSignerError::Protocol(format!(
                 "unexpected response for setup_channel: {other:?}"
             ))),
@@ -143,7 +198,70 @@ impl ExternalChannelSigner {
             backend,
             channel_keys_id_hex,
             channel_pubkeys,
+            setup_complete: Arc::new(AtomicBool::new(false)),
+            deferred_initial_holder_validation: Arc::new(Mutex::new(None)),
         }
+    }
+
+    fn replay_deferred_initial_holder_validation(
+        &self,
+        _channel_parameters: &ChannelTransactionParameters,
+        _secp_ctx: &Secp256k1<bitcoin::secp256k1::All>,
+    ) -> Result<(), ()> {
+        let pending = self
+            .deferred_initial_holder_validation
+            .lock()
+            .map_err(|_| ())?
+            .clone();
+        let Some(pending) = pending else {
+            return Ok(());
+        };
+        let resp = self
+            .backend
+            .call(ExternalSignerRequest::Channel(ExternalChannelRequest::Op {
+                channel_keys_id_hex: self.channel_keys_id_hex.clone(),
+                op: ExternalChannelOp::ValidateHolderCommitment {
+                    commitment_number: INITIAL_COMMITMENT_NUMBER
+                        .saturating_sub(pending.commitment_number),
+                    feerate_sat_per_kw: pending.feerate_per_kw,
+                    to_local_value_sat: pending.to_broadcaster_value_sat,
+                    to_remote_value_sat: pending.to_countersignatory_value_sat,
+                    htlcs: Self::to_external_htlcs(&pending.nondust_htlcs, false),
+                    counterparty_signature_hex: pending
+                        .counterparty_sig
+                        .serialize_compact()
+                        .to_lower_hex_string(),
+                    counterparty_htlc_signatures_hex: pending
+                        .counterparty_htlc_sigs
+                        .iter()
+                        .map(|sig| sig.serialize_compact().to_lower_hex_string())
+                        .collect(),
+                    commitment_unsigned_tx_hex: pending.commitment_unsigned_tx_hex.clone(),
+                    commitment_psbt_output_witness_scripts_hex: pending
+                        .commitment_psbt_output_witness_scripts_hex
+                        .clone(),
+                },
+            }))
+            .map_err(|e| {
+                tracing::warn!(
+                    channel_keys_id = %self.channel_keys_id_hex,
+                    commitment_number = pending.commitment_number,
+                    error = %e,
+                    "external signer deferred validate_holder_commitment transport/protocol failed"
+                );
+            })?;
+        match resp {
+            ExternalSignerResponse::Channel(
+                super::types::ExternalChannelResponse::ValidationComplete,
+            ) => {}
+            _ => return Err(()),
+        }
+        let mut guard = self
+            .deferred_initial_holder_validation
+            .lock()
+            .map_err(|_| ())?;
+        *guard = None;
+        Ok(())
     }
 
     pub(crate) fn get_per_commitment_point(&self, idx: u64) -> Result<String, RlnSignerError> {
@@ -152,13 +270,40 @@ impl ExternalChannelSigner {
             .call(ExternalSignerRequest::Channel(ExternalChannelRequest::Op {
                 channel_keys_id_hex: self.channel_keys_id_hex.clone(),
                 op: ExternalChannelOp::GetPerCommitmentPoint { idx },
-            }))? {
-            ExternalSignerResponse::Channel(
+            })) {
+            Ok(ExternalSignerResponse::Channel(
                 super::types::ExternalChannelResponse::PerCommitmentPoint { point_hex },
-            ) => Ok(point_hex),
-            other => Err(RlnSignerError::Protocol(format!(
+            )) => Ok(point_hex),
+            Ok(other) => Err(RlnSignerError::Protocol(format!(
                 "unexpected response for get_per_commitment_point: {other:?}"
             ))),
+            Err(err) => {
+                if !self.setup_complete.load(Ordering::Acquire) && idx < INITIAL_COMMITMENT_NUMBER {
+                    let fallback_idx = idx.saturating_add(1);
+                    tracing::warn!(
+                        channel_keys_id = %self.channel_keys_id_hex,
+                        idx,
+                        fallback_idx,
+                        error = %err,
+                        "falling back to pre-setup commitment point"
+                    );
+                    match self.backend.call(ExternalSignerRequest::Channel(
+                        ExternalChannelRequest::Op {
+                            channel_keys_id_hex: self.channel_keys_id_hex.clone(),
+                            op: ExternalChannelOp::GetPerCommitmentPoint { idx: fallback_idx },
+                        },
+                    ))? {
+                        ExternalSignerResponse::Channel(
+                            super::types::ExternalChannelResponse::PerCommitmentPoint { point_hex },
+                        ) => Ok(point_hex),
+                        other => Err(RlnSignerError::Protocol(format!(
+                            "unexpected fallback response for get_per_commitment_point: {other:?}"
+                        ))),
+                    }
+                } else {
+                    Err(err)
+                }
+            }
         }
     }
 
@@ -175,6 +320,57 @@ impl ExternalChannelSigner {
             other => Err(RlnSignerError::Protocol(format!(
                 "unexpected response for release_commitment_secret: {other:?}"
             ))),
+        }
+    }
+
+    fn validate_holder_commitment_with_backend(
+        &self,
+        holder_tx: &HolderCommitmentTransaction,
+    ) -> Result<(), ()> {
+        let built = &holder_tx.trust().built_transaction().transaction;
+        let commitment_psbt_output_witness_scripts_hex =
+            holder_validate_take_psbt_output_witness_scripts_hex();
+        let needs_wire_validation =
+            is_tx_colored(built) || commitment_psbt_output_witness_scripts_hex.is_some();
+        let commitment_unsigned_tx_hex = needs_wire_validation.then(|| serialize_hex(built));
+        let resp = self
+            .backend
+            .call(ExternalSignerRequest::Channel(ExternalChannelRequest::Op {
+                channel_keys_id_hex: self.channel_keys_id_hex.clone(),
+                op: ExternalChannelOp::ValidateHolderCommitment {
+                    commitment_number: INITIAL_COMMITMENT_NUMBER
+                        .saturating_sub(holder_tx.commitment_number()),
+                    feerate_sat_per_kw: holder_tx.negotiated_feerate_per_kw(),
+                    to_local_value_sat: holder_tx.to_broadcaster_value_sat(),
+                    to_remote_value_sat: holder_tx.to_countersignatory_value_sat(),
+                    htlcs: Self::to_external_htlcs(holder_tx.nondust_htlcs(), false),
+                    counterparty_signature_hex: holder_tx
+                        .counterparty_sig
+                        .serialize_compact()
+                        .to_lower_hex_string(),
+                    counterparty_htlc_signatures_hex: holder_tx
+                        .counterparty_htlc_sigs
+                        .iter()
+                        .map(|sig| sig.serialize_compact().to_lower_hex_string())
+                        .collect(),
+                    commitment_unsigned_tx_hex,
+                    commitment_psbt_output_witness_scripts_hex,
+                },
+            }))
+            .map_err(|e| {
+                tracing::warn!(
+                    channel_keys_id = %self.channel_keys_id_hex,
+                    commitment_number = holder_tx.commitment_number(),
+                    wire_validation = needs_wire_validation,
+                    error = %e,
+                    "external signer validate_holder_commitment transport/protocol failed"
+                );
+            })?;
+        match resp {
+            ExternalSignerResponse::Channel(
+                super::types::ExternalChannelResponse::ValidationComplete,
+            ) => Ok(()),
+            _ => Err(()),
         }
     }
 
@@ -238,35 +434,36 @@ impl ChannelSigner for ExternalChannelSigner {
         holder_tx: &HolderCommitmentTransaction,
         _outbound_htlc_preimages: Vec<PaymentPreimage>,
     ) -> Result<(), ()> {
-        let resp = self
-            .backend
-            .call(ExternalSignerRequest::Channel(ExternalChannelRequest::Op {
-                channel_keys_id_hex: self.channel_keys_id_hex.clone(),
-                op: ExternalChannelOp::ValidateHolderCommitment {
-                    commitment_number: INITIAL_COMMITMENT_NUMBER
-                        .saturating_sub(holder_tx.commitment_number()),
-                    feerate_sat_per_kw: holder_tx.negotiated_feerate_per_kw(),
-                    to_local_value_sat: holder_tx.to_broadcaster_value_sat(),
-                    to_remote_value_sat: holder_tx.to_countersignatory_value_sat(),
-                    htlcs: Self::to_external_htlcs(holder_tx.nondust_htlcs(), false),
-                    counterparty_signature_hex: holder_tx
-                        .counterparty_sig
-                        .serialize_compact()
-                        .to_lower_hex_string(),
-                    counterparty_htlc_signatures_hex: holder_tx
-                        .counterparty_htlc_sigs
-                        .iter()
-                        .map(|sig| sig.serialize_compact().to_lower_hex_string())
-                        .collect(),
-                },
-            }))
-            .map_err(|_| ())?;
-        match resp {
-            ExternalSignerResponse::Channel(
-                super::types::ExternalChannelResponse::ValidationComplete,
-            ) => Ok(()),
-            _ => Err(()),
+        if !self.setup_complete.load(Ordering::Acquire) {
+            let built = &holder_tx.trust().built_transaction().transaction;
+            let commitment_psbt_output_witness_scripts_hex =
+                holder_validate_take_psbt_output_witness_scripts_hex();
+            let needs_wire_validation =
+                is_tx_colored(built) || commitment_psbt_output_witness_scripts_hex.is_some();
+            let commitment_unsigned_tx_hex = needs_wire_validation.then(|| serialize_hex(built));
+            let mut guard = self
+                .deferred_initial_holder_validation
+                .lock()
+                .map_err(|_| ())?;
+            *guard = Some(DeferredInitialHolderValidation {
+                commitment_number: holder_tx.commitment_number(),
+                to_broadcaster_value_sat: holder_tx.to_broadcaster_value_sat(),
+                to_countersignatory_value_sat: holder_tx.to_countersignatory_value_sat(),
+                feerate_per_kw: holder_tx.negotiated_feerate_per_kw(),
+                nondust_htlcs: holder_tx.nondust_htlcs().clone(),
+                counterparty_sig: holder_tx.counterparty_sig,
+                counterparty_htlc_sigs: holder_tx.counterparty_htlc_sigs.clone(),
+                commitment_unsigned_tx_hex,
+                commitment_psbt_output_witness_scripts_hex,
+            });
+            tracing::debug!(
+                channel_keys_id = %self.channel_keys_id_hex,
+                commitment_number = holder_tx.commitment_number(),
+                "deferring external validate_holder_commitment until setup_channel completes"
+            );
+            return Ok(());
         }
+        self.validate_holder_commitment_with_backend(holder_tx)
     }
 
     fn validate_counterparty_revocation(&self, _idx: u64, _secret: &SecretKey) -> Result<(), ()> {
@@ -321,6 +518,15 @@ impl EcdsaChannelSigner for ExternalChannelSigner {
             );
             return Err(());
         }
+        if let Err(()) =
+            self.replay_deferred_initial_holder_validation(_channel_parameters, _secp_ctx)
+        {
+            tracing::error!(
+                channel_keys_id = %self.channel_keys_id_hex,
+                "external signer deferred initial holder validation replay failed"
+            );
+            return Err(());
+        }
         let mut preimages_hex: Vec<String> = inbound_htlc_preimages
             .into_iter()
             .map(|p| p.0.to_lower_hex_string())
@@ -330,6 +536,28 @@ impl EcdsaChannelSigner for ExternalChannelSigner {
                 .into_iter()
                 .map(|p| p.0.to_lower_hex_string()),
         );
+        let commitment_psbt_output_witness_scripts_hex = if is_tx_colored(
+            &commitment_tx.trust().built_transaction().transaction,
+        ) {
+            let directed = _channel_parameters.as_counterparty_broadcastable();
+            match commitment_tx.output_witness_scripts_for_vls_validate(&directed) {
+                Ok(wits) => Some(
+                    wits.iter()
+                        .map(|s| s.as_bytes().to_lower_hex_string())
+                        .collect(),
+                ),
+                Err(_) => {
+                    tracing::error!(
+                        channel_keys_id = %self.channel_keys_id_hex,
+                        commitment_number = commitment_tx.trust().commitment_number(),
+                        "external signer failed to derive counterparty commitment witness scripts"
+                    );
+                    return Err(());
+                }
+            }
+        } else {
+            None
+        };
         let resp =
             match self
                 .backend
@@ -352,6 +580,7 @@ impl EcdsaChannelSigner for ExternalChannelSigner {
                         to_remote_value_sat: commitment_tx.trust().to_broadcaster_value_sat(),
                         htlcs: Self::to_external_htlcs(commitment_tx.nondust_htlcs(), true),
                         preimages_hex,
+                        commitment_psbt_output_witness_scripts_hex,
                     },
                 })) {
                 Ok(resp) => resp,
@@ -415,6 +644,25 @@ impl EcdsaChannelSigner for ExternalChannelSigner {
             tracing::error!(
                 channel_keys_id = %self.channel_keys_id_hex,
                 "external signer setup_channel before sign_holder_commitment failed: {e}"
+            );
+            return Err(());
+        }
+        if is_tx_colored(&commitment_tx.trust().built_transaction().transaction) {
+            let directed = _channel_parameters.as_holder_broadcastable();
+            if let Ok(wits) = commitment_tx.output_witness_scripts_for_vls_validate(&directed) {
+                let hex_scripts: Vec<String> = wits
+                    .iter()
+                    .map(|s| s.as_bytes().to_lower_hex_string())
+                    .collect();
+                holder_validate_install_psbt_output_witness_scripts_hex(hex_scripts);
+            }
+        }
+        if let Err(e) = self.validate_holder_commitment_with_backend(commitment_tx) {
+            tracing::error!(
+                channel_keys_id = %self.channel_keys_id_hex,
+                commitment_number = commitment_tx.commitment_number(),
+                "external signer validate_holder_commitment before sign_holder_commitment failed: {:?}",
+                e
             );
             return Err(());
         }

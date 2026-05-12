@@ -18,9 +18,16 @@ From repo root:
 Build library and generate Python bindings:
 
 ```sh
+# Internal-signer-only flows (e.g. `manual_py_full_n2n.py`):
 cargo build --release --features uniffi --lib
+
+# Flows that use `NativeExternalSigner` / VLS (`manual_py_external_signer_e2e.py`):
+cargo build --release --features uniffi,vls --lib
+
 ./scripts/ci/uniffi_generate_python.sh
 ```
+
+`LnInvoiceRequest` is keyword-only in Python; pass `payment_hash=None` when you do not set a custom payment hash (see `manual_py_full_n2n.py`).
 
 Set env:
 
@@ -95,6 +102,31 @@ RESET_DATA=1 \
 python3 src/uniffi_api/examples/python-interop/manual_py_external_signer_e2e.py \
   --scenario connection-loss-real
 ```
+
+4. **Mixed RGB + external signer scenario** (`mixed-asset-channel-real`): **skipped by default**
+   (prints `SKIP …` unless you opt in). Internal signer on node A, `NativeExternalSigner` (VLS) on
+   node B; requires `RUN_MIXED_ASSET_EXTERNAL_E2E=1` and a `uniffi,vls` build.
+
+   ```sh
+   RUN_MIXED_ASSET_EXTERNAL_E2E=1 RESET_DATA=1 \
+   python3 src/uniffi_api/examples/python-interop/manual_py_external_signer_e2e.py \
+     --scenario mixed-asset-channel-real
+   ```
+
+   Optional env for this flow:
+
+   - `PY_EXT_SIGNER_DEBUG=1` — print ~10s progress while waiting on funding / visibility.
+   - `PY_EXT_SIGNER_FUNDING_MEMPOOL_FALLBACK=0` — disable the regtest-only heuristic that treats a
+     **sole** mempool transaction as the funding tx when `list_channels()` is slow to expose
+     `funding_txid` (single-channel flows only).
+   - `PAYMENT_SUCCEEDED_TIMEOUT_SEC` — seconds to wait for `HtlcStatus.SUCCEEDED` after `sendpayment`
+     (default `300`; payment wait also syncs the peer and mines a block every 5 polls, like `lib_sdk`).
+
+Note:
+- `mixed-asset-channel-real` honors `OPEN_CHANNEL_PUSH_MSAT` and has been validated with a non-zero
+  BTC push (`3_500_000 msat`) on the current branch.
+- The regular example scenarios still default to `push_msat=0` unless explicitly changed in the
+  script.
 
 Stable shell target for any supported native signer scenario:
 

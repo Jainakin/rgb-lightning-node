@@ -2134,7 +2134,16 @@ async fn handle_ldk_events(
                 hex_str(&counterparty_node_id.serialize()),
             );
 
-            unlocked_state.add_channel_id(former_temporary_channel_id.unwrap(), channel_id);
+            let former_temp = former_temporary_channel_id.expect(
+                "EVENT: ChannelPending requires former_temporary_channel_id (LDK >= 0.0.115)",
+            );
+            unlocked_state.add_channel_id(former_temp, channel_id);
+
+            _finalize_virtual_rgb_channel_info(
+                &former_temp,
+                &channel_id,
+                unlocked_state.kv_store.as_ref(),
+            );
 
             if unlocked_state
                 .virtual_channel_session_store()
@@ -2863,7 +2872,7 @@ pub(crate) async fn start_ldk(
                 .into_extended_key()
                 .expect("a valid key should have been provided");
             let master_xprv = &xkey
-                .into_xprv(network)
+                .into_xprv(network.into())
                 .expect("should be possible to get an extended private key");
             let xprv: Xpriv = master_xprv
                 .derive_priv(&Secp256k1_30::new(), &ChildNumber::Hardened { index: 535 })

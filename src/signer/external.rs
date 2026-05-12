@@ -249,10 +249,14 @@ impl NodeSigner for ExternalSigner {
         invoice: &RawBolt11Invoice,
         _recipient: Recipient,
     ) -> Result<RecoverableSignature, ()> {
-        let hrp = invoice.hrp.to_string();
+        let (hrp, u5bytes) = invoice.to_raw();
         let req = ExternalSignerRequest::Node(ExternalNodeRequest::SignInvoice {
             hrp,
-            u5bytes_hex: invoice.signable_hash().to_lower_hex_string(),
+            u5bytes_hex: u5bytes
+                .iter()
+                .map(|b| u8::from(*b))
+                .collect::<Vec<_>>()
+                .to_lower_hex_string(),
         });
         let resp = self.backend.call(req).map_err(|_| ())?;
         let ExternalSignerResponse::Node(ExternalNodeResponse::RecoverableSignature {
@@ -315,7 +319,15 @@ impl SignerProvider for ExternalSigner {
     fn generate_channel_keys_id(&self, inbound: bool, user_channel_id: u128) -> [u8; 32] {
         let keys_hex = self
             .generate_channel_keys_id(inbound, 0, user_channel_id)
-            .unwrap_or_else(|_| "00".repeat(32));
+            .unwrap_or_else(|e| {
+                tracing::warn!(
+                    %inbound,
+                    %user_channel_id,
+                    error = %e,
+                    "external signer generate_channel_keys_id fallback"
+                );
+                "00".repeat(32)
+            });
         let bytes = Vec::<u8>::from_hex(&keys_hex).unwrap_or_else(|_| vec![0u8; 32]);
         let mut out = [0u8; 32];
         if bytes.len() >= 32 {
@@ -326,7 +338,12 @@ impl SignerProvider for ExternalSigner {
 
     fn derive_channel_signer(&self, channel_keys_id: [u8; 32]) -> Self::EcdsaSigner {
         self.derive_channel_signer(0, channel_keys_id.to_lower_hex_string())
-            .unwrap_or_else(|_| {
+            .unwrap_or_else(|e| {
+                tracing::warn!(
+                    channel_keys_id = %channel_keys_id.to_lower_hex_string(),
+                    error = %e,
+                    "external signer derive_channel_signer fallback"
+                );
                 ExternalChannelSigner::new(
                     Arc::clone(&self.backend),
                     channel_keys_id.to_lower_hex_string(),

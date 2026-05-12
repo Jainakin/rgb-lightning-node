@@ -48,6 +48,12 @@ fi
 
 ensure_regtest_available
 
+# `mixed-asset-channel-real` is opt-in inside the Python scenario; enable it automatically
+# when this script is used with that scenario so CI/local runs do not silently skip the flow.
+if [[ "${EXTERNAL_SIGNER_SCENARIO}" == "mixed-asset-channel-real" ]]; then
+    export RUN_MIXED_ASSET_EXTERNAL_E2E="${RUN_MIXED_ASSET_EXTERNAL_E2E:-1}"
+fi
+
 echo "Building UniFFI library..."
 cargo build --release --features uniffi,vls --lib
 ./scripts/ci/uniffi_generate_python.sh
@@ -59,6 +65,7 @@ LD_LIBRARY_PATH="$ROOT_DIR/target/release:${LD_LIBRARY_PATH:-}" \
 RESET_DATA="${RESET_DATA}" \
 OPEN_CHANNEL_CONFIRM_BLOCKS="${OPEN_CHANNEL_CONFIRM_BLOCKS}" \
 CHANNEL_READY_TIMEOUT_SEC="${CHANNEL_READY_TIMEOUT_SEC}" \
+RUN_MIXED_ASSET_EXTERNAL_E2E="${RUN_MIXED_ASSET_EXTERNAL_E2E:-}" \
 PY_EXT_SIGNER_SCENARIO="${EXTERNAL_SIGNER_SCENARIO}" \
 python3 src/uniffi_api/examples/python-interop/manual_py_external_signer_e2e.py \
   --scenario "${EXTERNAL_SIGNER_SCENARIO}"

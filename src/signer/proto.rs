@@ -297,6 +297,9 @@ struct ChannelIndexV1 {
     pub idx: u64,
 }
 
+/// Protobuf encoding of the `ValidateHolderCommitment` channel op (see `signer_external::contract`).
+/// Field **8** is the consensus-serialized unsigned holder commitment tx (hex) for the RGB / full-tx VLS path.
+/// Field **9** is witness redeem scripts (hex), one per output, for PSBT `witness_script` (VLS decode).
 #[derive(Clone, PartialEq, Message)]
 struct ValidateHolderCommitmentV1 {
     #[prost(uint64, tag = "1")]
@@ -313,6 +316,11 @@ struct ValidateHolderCommitmentV1 {
     pub counterparty_signature_hex: String,
     #[prost(string, repeated, tag = "7")]
     pub counterparty_htlc_signatures_hex: Vec<String>,
+    /// Consensus-serialized holder commitment tx (hex). Non-empty enables RGB / full-tx VLS path.
+    #[prost(string, tag = "8")]
+    pub commitment_unsigned_tx_hex: String,
+    #[prost(string, repeated, tag = "9")]
+    pub commitment_psbt_output_witness_scripts_hex: Vec<String>,
 }
 
 #[derive(Clone, PartialEq, Message)]
@@ -341,6 +349,8 @@ struct SignCounterpartyCommitmentV1 {
     pub htlcs: Vec<ChannelHtlcV1>,
     #[prost(string, repeated, tag = "8")]
     pub preimages_hex: Vec<String>,
+    #[prost(string, repeated, tag = "9")]
+    pub commitment_psbt_output_witness_scripts_hex: Vec<String>,
 }
 
 #[derive(Clone, PartialEq, Message)]
@@ -1079,6 +1089,8 @@ impl From<ChannelOp> for ChannelOpV1 {
                 htlcs,
                 counterparty_signature_hex,
                 counterparty_htlc_signatures_hex,
+                commitment_unsigned_tx_hex,
+                commitment_psbt_output_witness_scripts_hex,
             } => channel_op_v1::Kind::ValidateHolderCommitment(ValidateHolderCommitmentV1 {
                 commitment_number,
                 feerate_sat_per_kw,
@@ -1087,6 +1099,9 @@ impl From<ChannelOp> for ChannelOpV1 {
                 htlcs: htlcs.into_iter().map(Into::into).collect(),
                 counterparty_signature_hex,
                 counterparty_htlc_signatures_hex,
+                commitment_unsigned_tx_hex: commitment_unsigned_tx_hex.unwrap_or_default(),
+                commitment_psbt_output_witness_scripts_hex:
+                    commitment_psbt_output_witness_scripts_hex.unwrap_or_default(),
             }),
             ChannelOp::SignHolderCommitment {
                 tx_hex,
@@ -1104,6 +1119,7 @@ impl From<ChannelOp> for ChannelOpV1 {
                 to_remote_value_sat,
                 htlcs,
                 preimages_hex,
+                commitment_psbt_output_witness_scripts_hex,
             } => channel_op_v1::Kind::SignCounterpartyCommitment(SignCounterpartyCommitmentV1 {
                 tx_hex,
                 remote_per_commitment_point_hex,
@@ -1113,6 +1129,8 @@ impl From<ChannelOp> for ChannelOpV1 {
                 to_remote_value_sat,
                 htlcs: htlcs.into_iter().map(Into::into).collect(),
                 preimages_hex,
+                commitment_psbt_output_witness_scripts_hex:
+                    commitment_psbt_output_witness_scripts_hex.unwrap_or_default(),
             }),
             ChannelOp::SignClosingTransaction { tx_hex } => {
                 channel_op_v1::Kind::SignClosingTransaction(SignClosingTransactionV1 { tx_hex })
@@ -1241,6 +1259,17 @@ impl TryFrom<ChannelOpV1> for ChannelOp {
                 Ok(Self::ReleaseCommitmentSecret { idx: v.idx })
             }
             channel_op_v1::Kind::ValidateHolderCommitment(v) => {
+                let commitment_unsigned_tx_hex = if v.commitment_unsigned_tx_hex.is_empty() {
+                    None
+                } else {
+                    Some(v.commitment_unsigned_tx_hex)
+                };
+                let commitment_psbt_output_witness_scripts_hex =
+                    if v.commitment_psbt_output_witness_scripts_hex.is_empty() {
+                        None
+                    } else {
+                        Some(v.commitment_psbt_output_witness_scripts_hex)
+                    };
                 Ok(Self::ValidateHolderCommitment {
                     commitment_number: v.commitment_number,
                     feerate_sat_per_kw: v.feerate_sat_per_kw,
@@ -1249,6 +1278,8 @@ impl TryFrom<ChannelOpV1> for ChannelOp {
                     htlcs: v.htlcs.into_iter().map(Into::into).collect(),
                     counterparty_signature_hex: v.counterparty_signature_hex,
                     counterparty_htlc_signatures_hex: v.counterparty_htlc_signatures_hex,
+                    commitment_unsigned_tx_hex,
+                    commitment_psbt_output_witness_scripts_hex,
                 })
             }
             channel_op_v1::Kind::SignHolderCommitment(v) => Ok(Self::SignHolderCommitment {
@@ -1265,6 +1296,14 @@ impl TryFrom<ChannelOpV1> for ChannelOp {
                     to_remote_value_sat: v.to_remote_value_sat,
                     htlcs: v.htlcs.into_iter().map(Into::into).collect(),
                     preimages_hex: v.preimages_hex,
+                    commitment_psbt_output_witness_scripts_hex: if v
+                        .commitment_psbt_output_witness_scripts_hex
+                        .is_empty()
+                    {
+                        None
+                    } else {
+                        Some(v.commitment_psbt_output_witness_scripts_hex)
+                    },
                 })
             }
             channel_op_v1::Kind::SignClosingTransaction(v) => {
@@ -1688,6 +1727,27 @@ mod tests {
         let wire = encode_signer_response(&response).expect("encode");
         let decoded = decode_signer_response(&wire).expect("decode");
         assert_eq!(decoded, response);
+    }
+
+    #[test]
+    fn channel_op_validate_holder_commitment_with_wire_tx_roundtrip() {
+        let request = SignerRequest::Channel(ChannelRequest::Op {
+            channel_keys_id_hex: "11".repeat(32),
+            op: ChannelOp::ValidateHolderCommitment {
+                commitment_number: 42,
+                feerate_sat_per_kw: 253,
+                to_local_value_sat: 100_000,
+                to_remote_value_sat: 200_000,
+                htlcs: vec![],
+                counterparty_signature_hex: "ab".repeat(64),
+                counterparty_htlc_signatures_hex: vec![],
+                commitment_unsigned_tx_hex: Some("01000000000100".to_string()),
+                commitment_psbt_output_witness_scripts_hex: None,
+            },
+        });
+        let wire = encode_signer_request(&request).expect("encode");
+        let decoded = decode_signer_request(&wire).expect("decode");
+        assert_eq!(decoded, request);
     }
 
     #[test]

@@ -2673,6 +2673,7 @@ dependencies = [
 [[package]]
 name = "lightning"
 version = "0.2.2"
+source = "git+https://github.com/rmn-boiko/rust-lightning.git?branch=feat%2Fexternal-signer-compatibility#4d7fa08cd00cfdc9db82a82223f760ee22e14522"
 dependencies = [
  "bech32 0.11.1",
  "bincode",
@@ -2682,11 +2683,11 @@ dependencies = [
  "hashbrown 0.13.2",
  "libm",
  "lightning-invoice 0.34.0",
- "lightning-macros 0.2.1",
+ "lightning-macros 0.2.1 (git+https://github.com/rmn-boiko/rust-lightning.git?branch=feat%2Fexternal-signer-compatibility)",
  "lightning-types 0.3.1",
  "musig2",
- "possiblyrandom 0.2.0",
- "rgb-lib",
+ "possiblyrandom 0.2.0 (git+https://github.com/rmn-boiko/rust-lightning.git?branch=feat%2Fexternal-signer-compatibility)",
+ "rgb-lib 0.3.0-beta.5 (git+https://github.com/UTEXO-Protocol/rgb-lib.git?branch=dev)",
  "serde",
  "tokio",
 ]
@@ -2694,6 +2695,7 @@ dependencies = [
 [[package]]
 name = "lightning-background-processor"
 version = "0.2.0"
+source = "git+https://github.com/rmn-boiko/rust-lightning.git?branch=feat%2Fexternal-signer-compatibility#4d7fa08cd00cfdc9db82a82223f760ee22e14522"
 dependencies = [
  "bitcoin",
  "bitcoin-io",
@@ -2701,14 +2703,13 @@ dependencies = [
  "lightning 0.2.2",
  "lightning-liquidity",
  "lightning-rapid-gossip-sync",
- "possiblyrandom 0.2.0",
+ "possiblyrandom 0.2.0 (git+https://github.com/rmn-boiko/rust-lightning.git?branch=feat%2Fexternal-signer-compatibility)",
 ]
 
 [[package]]
 name = "lightning-block-sync"
 version = "0.2.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ee5069846b07a62aaecdaf25233e067bc69f245b7c8fd00cc9c217053221f875"
+source = "git+https://github.com/rmn-boiko/rust-lightning.git?branch=feat%2Fexternal-signer-compatibility#4d7fa08cd00cfdc9db82a82223f760ee22e14522"
 dependencies = [
  "bitcoin",
  "chunked_transfer",
@@ -2720,6 +2721,7 @@ dependencies = [
 [[package]]
 name = "lightning-dns-resolver"
 version = "0.3.0"
+source = "git+https://github.com/rmn-boiko/rust-lightning.git?branch=feat%2Fexternal-signer-compatibility#4d7fa08cd00cfdc9db82a82223f760ee22e14522"
 dependencies = [
  "dnssec-prover",
  "lightning 0.2.2",
@@ -2741,35 +2743,28 @@ dependencies = [
 [[package]]
 name = "lightning-invoice"
 version = "0.34.0"
+source = "git+https://github.com/rmn-boiko/rust-lightning.git?branch=feat%2Fexternal-signer-compatibility#4d7fa08cd00cfdc9db82a82223f760ee22e14522"
 dependencies = [
  "bech32 0.11.1",
  "bitcoin",
  "lightning-types 0.3.1",
- "rgb-lib",
+ "rgb-lib 0.3.0-beta.5 (git+https://github.com/UTEXO-Protocol/rgb-lib.git?branch=dev)",
  "serde",
 ]
 
 [[package]]
 name = "lightning-liquidity"
 version = "0.2.0"
+source = "git+https://github.com/rmn-boiko/rust-lightning.git?branch=feat%2Fexternal-signer-compatibility#4d7fa08cd00cfdc9db82a82223f760ee22e14522"
 dependencies = [
  "bitcoin",
  "chrono",
  "lightning 0.2.2",
  "lightning-invoice 0.34.0",
- "lightning-macros 0.2.1",
+ "lightning-macros 0.2.1 (git+https://github.com/rmn-boiko/rust-lightning.git?branch=feat%2Fexternal-signer-compatibility)",
  "lightning-types 0.3.1",
  "serde",
  "serde_json",
-]
-
-[[package]]
-name = "lightning-macros"
-version = "0.2.1"
-dependencies = [
- "proc-macro2",
- "quote",
- "syn 2.0.117",
 ]
 
 [[package]]
@@ -2784,10 +2779,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "lightning-macros"
+version = "0.2.1"
+source = "git+https://github.com/rmn-boiko/rust-lightning.git?branch=feat%2Fexternal-signer-compatibility#4d7fa08cd00cfdc9db82a82223f760ee22e14522"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 2.0.117",
+]
+
+[[package]]
 name = "lightning-net-tokio"
 version = "0.2.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8055737e3d2d06240a3fdf10e26b2716110fcea90011a0839e8e82fc6e58ff5e"
+source = "git+https://github.com/rmn-boiko/rust-lightning.git?branch=feat%2Fexternal-signer-compatibility#4d7fa08cd00cfdc9db82a82223f760ee22e14522"
 dependencies = [
  "bitcoin",
  "lightning 0.2.2",
@@ -2797,6 +2801,7 @@ dependencies = [
 [[package]]
 name = "lightning-persister"
 version = "0.2.0"
+source = "git+https://github.com/rmn-boiko/rust-lightning.git?branch=feat%2Fexternal-signer-compatibility#4d7fa08cd00cfdc9db82a82223f760ee22e14522"
 dependencies = [
  "bitcoin",
  "lightning 0.2.2",
@@ -2807,6 +2812,7 @@ dependencies = [
 [[package]]
 name = "lightning-rapid-gossip-sync"
 version = "0.2.0"
+source = "git+https://github.com/rmn-boiko/rust-lightning.git?branch=feat%2Fexternal-signer-compatibility#4d7fa08cd00cfdc9db82a82223f760ee22e14522"
 dependencies = [
  "bitcoin",
  "bitcoin-io",
@@ -2826,6 +2832,7 @@ dependencies = [
 [[package]]
 name = "lightning-types"
 version = "0.3.1"
+source = "git+https://github.com/rmn-boiko/rust-lightning.git?branch=feat%2Fexternal-signer-compatibility#4d7fa08cd00cfdc9db82a82223f760ee22e14522"
 dependencies = [
  "bitcoin",
 ]
@@ -3451,6 +3458,8 @@ dependencies = [
 [[package]]
 name = "possiblyrandom"
 version = "0.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1b122a615d72104fb3d8b26523fdf9232cd8ee06949fb37e4ce3ff964d15dffd"
 dependencies = [
  "getrandom 0.2.17",
 ]
@@ -3458,8 +3467,7 @@ dependencies = [
 [[package]]
 name = "possiblyrandom"
 version = "0.2.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1b122a615d72104fb3d8b26523fdf9232cd8ee06949fb37e4ce3ff964d15dffd"
+source = "git+https://github.com/rmn-boiko/rust-lightning.git?branch=feat%2Fexternal-signer-compatibility#4d7fa08cd00cfdc9db82a82223f760ee22e14522"
 dependencies = [
  "getrandom 0.2.17",
 ]
@@ -3936,9 +3944,9 @@ dependencies = [
 
 [[package]]
 name = "rgb-aluvm"
-version = "0.11.1-rc.2"
+version = "0.11.1-rc.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f6b9e41006564b48551e52e001181898982b11732348100216097033b3e536a2"
+checksum = "b60686e4f1701ca4f73b77660777a49e651f3c611461ab62ef718db47a5a6caa"
 dependencies = [
  "amplify",
  "baid64",
@@ -3970,9 +3978,9 @@ dependencies = [
 
 [[package]]
 name = "rgb-consensus"
-version = "0.11.1-rc.9"
+version = "0.11.1-rc.10"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1e6e0da534613ed77953976b9be54c7db66bd5a6c66773bd5866b1bacdbfb41d"
+checksum = "535483ee9143782e33ddebd3eda465de0184061fc3c480e24990e42fefc58bb0"
 dependencies = [
  "amplify",
  "baid64",
@@ -4031,7 +4039,49 @@ dependencies = [
  "rand 0.10.1",
  "reqwest 0.13.2",
  "rgb-invoicing",
- "rgb-lib-migration",
+ "rgb-lib-migration 0.3.0-beta.3 (git+https://github.com/UTEXO-Protocol/rgb-lib.git?branch=dev)",
+ "rgb-ops",
+ "rgb-psbt-utils",
+ "rgb-schemas",
+ "rgb-strict-encoding",
+ "rgb-strict-types",
+ "rustls 0.23.39",
+ "scrypt",
+ "sea-orm",
+ "sea-query",
+ "serde",
+ "serde_json",
+ "slog",
+ "slog-async",
+ "slog-term",
+ "tempfile",
+ "thiserror 2.0.18",
+ "time",
+ "tokio",
+ "typenum",
+ "url",
+ "walkdir",
+ "zip 8.5.1",
+]
+
+[[package]]
+name = "rgb-lib"
+version = "0.3.0-beta.5"
+source = "git+https://github.com/UTEXO-Protocol/rgb-lib.git?rev=5aabef63b8fc004fa51a143f47c687fc6dc9c0e5#5aabef63b8fc004fa51a143f47c687fc6dc9c0e5"
+dependencies = [
+ "amplify",
+ "base64 0.22.1",
+ "bdk_electrum",
+ "bdk_esplora",
+ "bdk_wallet",
+ "chacha20poly1305",
+ "file-format",
+ "generic-array",
+ "hex",
+ "rand 0.10.1",
+ "reqwest 0.13.2",
+ "rgb-invoicing",
+ "rgb-lib-migration 0.3.0-beta.3 (git+https://github.com/UTEXO-Protocol/rgb-lib.git?rev=5aabef63b8fc004fa51a143f47c687fc6dc9c0e5)",
  "rgb-ops",
  "rgb-psbt-utils",
  "rgb-schemas",
@@ -4060,6 +4110,15 @@ dependencies = [
 name = "rgb-lib-migration"
 version = "0.3.0-beta.3"
 source = "git+https://github.com/UTEXO-Protocol/rgb-lib.git?branch=dev#5aabef63b8fc004fa51a143f47c687fc6dc9c0e5"
+dependencies = [
+ "sea-orm-migration",
+ "tokio",
+]
+
+[[package]]
+name = "rgb-lib-migration"
+version = "0.3.0-beta.3"
+source = "git+https://github.com/UTEXO-Protocol/rgb-lib.git?rev=5aabef63b8fc004fa51a143f47c687fc6dc9c0e5#5aabef63b8fc004fa51a143f47c687fc6dc9c0e5"
 dependencies = [
  "sea-orm-migration",
  "tokio",
@@ -4103,7 +4162,7 @@ dependencies = [
  "rand 0.8.6",
  "regex",
  "reqwest 0.12.28",
- "rgb-lib",
+ "rgb-lib 0.3.0-beta.5 (git+https://github.com/UTEXO-Protocol/rgb-lib.git?rev=5aabef63b8fc004fa51a143f47c687fc6dc9c0e5)",
  "rln-migration",
  "scrypt",
  "sea-orm",
@@ -5001,7 +5060,6 @@ dependencies = [
 [[package]]
 name = "signer-external"
 version = "0.1.0-alpha"
-source = "git+https://github.com/UTEXO-Protocol/rln-external-signer?branch=main#daca7e148b5569ca5f2a7d3b3db5d2d29bffd16a"
 dependencies = [
  "base64 0.22.1",
  "bitcoin",
@@ -6134,8 +6192,7 @@ dependencies = [
 [[package]]
 name = "vls-core"
 version = "0.14.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4ac7a6047e0c2fcc73dfd9b5a545d357dcbc9aaaad0e90533c1a1c9bd2049e99"
+source = "git+https://github.com/rmn-boiko/vls-core.git?branch=feat%2Frgb-compatibility#7567813b4a9a90349afd05e1efa73134ea31364b"
 dependencies = [
  "ahash",
  "anyhow",
@@ -6207,8 +6264,7 @@ dependencies = [
 [[package]]
 name = "vls-protocol-signer"
 version = "0.14.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ddb4d6be842ee103875fe20e857cd9ab518036b69386b3608a71d6c37e0b107b"
+source = "git+https://github.com/rmn-boiko/vls-protocol-signer.git?branch=feat%2Frgb-compatibility#dddd336fcdf84c4febdd7af8363bda8d1721d893"
 dependencies = [
  "bit-vec",
  "log",
