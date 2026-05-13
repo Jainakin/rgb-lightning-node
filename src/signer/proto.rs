@@ -1,7 +1,7 @@
 use prost::Message;
 use signer_external::contract::{
     BootstrapData, ChannelHtlc, ChannelOp, ChannelPublicKeys, ChannelRequest, ChannelResponse,
-    DebugDerivedAddress, NodeRequest, NodeResponse, SignerIdentity, SignerRequest, SignerResponse,
+    DerivedAddressMatch, NodeRequest, NodeResponse, SignerIdentity, SignerRequest, SignerResponse,
     SpendableOutputUtxo, WalletInputMetadata,
 };
 
@@ -66,7 +66,7 @@ struct WalletInputMetadataV1 {
 }
 
 #[derive(Clone, PartialEq, Message)]
-struct DebugDerivedAddressV1 {
+struct DerivedAddressMatchV1 {
     #[prost(uint32, tag = "1")]
     pub keyindex: u32,
     #[prost(string, tag = "2")]
@@ -682,7 +682,7 @@ struct WalletInputMetadataResponseV1 {
 }
 
 #[derive(Clone, PartialEq, Message)]
-struct DebugDeriveAddressesRequestV1 {
+struct FindDerivationMatchesRequestV1 {
     #[prost(string, tag = "1")]
     pub script_pubkey_hex: String,
     #[prost(uint32, tag = "2")]
@@ -690,9 +690,9 @@ struct DebugDeriveAddressesRequestV1 {
 }
 
 #[derive(Clone, PartialEq, Message)]
-struct DebugDeriveAddressesResponseV1 {
+struct FindDerivationMatchesResponseV1 {
     #[prost(message, repeated, tag = "1")]
-    pub matches: Vec<DebugDerivedAddressV1>,
+    pub matches: Vec<DerivedAddressMatchV1>,
 }
 
 #[derive(Clone, PartialEq, Message)]
@@ -718,7 +718,7 @@ mod signer_request_v1 {
         #[prost(message, tag = "6")]
         GetWalletInputMetadata(GetWalletInputMetadataRequestV1),
         #[prost(message, tag = "7")]
-        DebugDeriveAddresses(DebugDeriveAddressesRequestV1),
+        FindDerivationMatches(FindDerivationMatchesRequestV1),
     }
 }
 
@@ -743,7 +743,7 @@ mod signer_response_v1 {
         #[prost(message, tag = "5")]
         WalletInputMetadata(WalletInputMetadataResponseV1),
         #[prost(message, tag = "6")]
-        DebugDeriveAddresses(DebugDeriveAddressesResponseV1),
+        FindDerivationMatches(FindDerivationMatchesResponseV1),
     }
 }
 
@@ -845,24 +845,24 @@ impl From<WalletInputMetadataV1> for WalletInputMetadata {
     }
 }
 
-impl From<DebugDerivedAddress> for DebugDerivedAddressV1 {
-    fn from(value: DebugDerivedAddress) -> Self {
+impl From<DerivedAddressMatch> for DerivedAddressMatchV1 {
+    fn from(value: DerivedAddressMatch) -> Self {
         Self {
             keyindex: value.keyindex,
             address: value.address,
-            derivation: value.derivation,
-            account: value.account,
+            derivation: value.derivation_path,
+            account: value.account_name,
         }
     }
 }
 
-impl From<DebugDerivedAddressV1> for DebugDerivedAddress {
-    fn from(value: DebugDerivedAddressV1) -> Self {
+impl From<DerivedAddressMatchV1> for DerivedAddressMatch {
+    fn from(value: DerivedAddressMatchV1) -> Self {
         Self {
             keyindex: value.keyindex,
             address: value.address,
-            derivation: value.derivation,
-            account: value.account,
+            derivation_path: value.derivation,
+            account_name: value.account,
         }
     }
 }
@@ -1543,10 +1543,10 @@ impl From<SignerRequest> for SignerRequestV1 {
                 script_pubkey_hex,
                 amount_sat,
             }),
-            SignerRequest::DebugDeriveAddresses {
+            SignerRequest::FindDerivationMatches {
                 script_pubkey_hex,
                 max_index,
-            } => signer_request_v1::Kind::DebugDeriveAddresses(DebugDeriveAddressesRequestV1 {
+            } => signer_request_v1::Kind::FindDerivationMatches(FindDerivationMatchesRequestV1 {
                 script_pubkey_hex,
                 max_index,
             }),
@@ -1583,7 +1583,7 @@ impl TryFrom<SignerRequestV1> for SignerRequest {
                     amount_sat: v.amount_sat,
                 })
             }
-            signer_request_v1::Kind::DebugDeriveAddresses(v) => Ok(Self::DebugDeriveAddresses {
+            signer_request_v1::Kind::FindDerivationMatches(v) => Ok(Self::FindDerivationMatches {
                 script_pubkey_hex: v.script_pubkey_hex,
                 max_index: v.max_index,
             }),
@@ -1605,8 +1605,8 @@ impl From<SignerResponse> for SignerResponseV1 {
                     metadata: metadata.map(Into::into),
                 })
             }
-            SignerResponse::DebugDeriveAddresses { matches } => {
-                signer_response_v1::Kind::DebugDeriveAddresses(DebugDeriveAddressesResponseV1 {
+            SignerResponse::FindDerivationMatches { matches } => {
+                signer_response_v1::Kind::FindDerivationMatches(FindDerivationMatchesResponseV1 {
                     matches: matches.into_iter().map(Into::into).collect(),
                 })
             }
@@ -1629,7 +1629,7 @@ impl TryFrom<SignerResponseV1> for SignerResponse {
             signer_response_v1::Kind::WalletInputMetadata(v) => Ok(Self::WalletInputMetadata {
                 metadata: v.metadata.map(Into::into),
             }),
-            signer_response_v1::Kind::DebugDeriveAddresses(v) => Ok(Self::DebugDeriveAddresses {
+            signer_response_v1::Kind::FindDerivationMatches(v) => Ok(Self::FindDerivationMatches {
                 matches: v.matches.into_iter().map(Into::into).collect(),
             }),
         }

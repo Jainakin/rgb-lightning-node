@@ -1,6 +1,6 @@
 pub(crate) type WalletInputMetadata = signer_external::contract::WalletInputMetadata;
 pub(crate) type SpendableOutputUtxo = signer_external::contract::SpendableOutputUtxo;
-pub(crate) type DebugDerivedAddress = signer_external::contract::DebugDerivedAddress;
+pub(crate) type DerivedAddressMatch = signer_external::contract::DerivedAddressMatch;
 #[allow(dead_code)]
 pub(crate) type SignerIdentity = signer_external::contract::SignerIdentity;
 pub(crate) type BootstrapData = signer_external::contract::BootstrapData;

@@ -4,7 +4,7 @@
 
 pub use signer_external::contract::{
     BootstrapData, ChannelOp, ChannelPublicKeys, ChannelRequest, ChannelResponse,
-    DebugDerivedAddress, NodeRequest, NodeResponse, SignerIdentity, SignerRequest, SignerResponse,
+    DerivedAddressMatch, NodeRequest, NodeResponse, SignerIdentity, SignerRequest, SignerResponse,
     SpendableOutputUtxo, WalletInputMetadata,
 };
 

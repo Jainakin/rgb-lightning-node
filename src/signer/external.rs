@@ -27,7 +27,7 @@ use super::entropy::SystemEntropySource;
 use super::transport::ExternalSignerTransport;
 use super::types::{
     async_payments_root_seed_bytes, validate_bootstrap_ldk_auxiliary_keys, BootstrapData,
-    DebugDerivedAddress, ExternalNodeRequest, ExternalNodeResponse, ExternalSignerRequest,
+    DerivedAddressMatch, ExternalNodeRequest, ExternalNodeResponse, ExternalSignerRequest,
     ExternalSignerResponse, RgbWalletAccountInfo, RlnSignerError, SpendableOutputUtxo,
     WalletInputMetadata,
 };
@@ -177,7 +177,7 @@ impl ExternalSigner {
             } => {
                 let script_pubkey_hex = output.script_pubkey.to_hex_string();
                 let mut keyindex = self
-                    .debug_keyindex_for_script(&script_pubkey_hex)?
+                    .find_keyindex_for_script(&script_pubkey_hex)?
                     .unwrap_or(0);
                 if keyindex == 0 {
                     if let Some(channel_keys_id) = channel_keys_id {
@@ -248,33 +248,36 @@ impl ExternalSigner {
             .map_err(|_| ())
     }
 
-    fn derivation_path_from_debug_match(m: &DebugDerivedAddress) -> Result<DerivationPath, ()> {
-        if m.derivation.is_empty() {
+    fn derivation_path_from_match(m: &DerivedAddressMatch) -> Result<DerivationPath, ()> {
+        if m.derivation_path.is_empty() {
             return Ok(DerivationPath::from(Vec::<ChildNumber>::new()));
         }
         let mut path = Vec::new();
-        for segment in m.derivation.split('/') {
+        for segment in m.derivation_path.split('/') {
             let idx = segment.parse::<u32>().map_err(|_| ())?;
             path.push(ChildNumber::from_normal_idx(idx).map_err(|_| ())?);
         }
         Ok(DerivationPath::from(path))
     }
 
-    fn debug_derived_match_for_script(
+    fn find_derivation_match_for_script(
         &self,
         script_pubkey_hex: &str,
-    ) -> Result<Option<DebugDerivedAddress>, ()> {
-        const MAX_DEBUG_DERIVATION_INDEX: u32 = 10_000;
+    ) -> Result<Option<DerivedAddressMatch>, ()> {
+        const MAX_DERIVATION_SEARCH_INDEX: u32 = 10_000;
         let matches = self
             .backend
-            .debug_derive_addresses(script_pubkey_hex.to_string(), MAX_DEBUG_DERIVATION_INDEX)
+            .find_derivation_matches_for_script(
+                script_pubkey_hex.to_string(),
+                MAX_DERIVATION_SEARCH_INDEX,
+            )
             .map_err(|_| ())?;
         Ok(matches.first().cloned())
     }
 
-    fn debug_keyindex_for_script(&self, script_pubkey_hex: &str) -> Result<Option<u32>, ()> {
+    fn find_keyindex_for_script(&self, script_pubkey_hex: &str) -> Result<Option<u32>, ()> {
         Ok(self
-            .debug_derived_match_for_script(script_pubkey_hex)?
+            .find_derivation_match_for_script(script_pubkey_hex)?
             .map(|m| m.keyindex))
     }
 
@@ -282,7 +285,7 @@ impl ExternalSigner {
         &self,
         outpoint: &lightning::chain::transaction::OutPoint,
         output: &bitcoin::TxOut,
-        derived_match: &DebugDerivedAddress,
+        derived_match: &DerivedAddressMatch,
         psbt: &mut Psbt,
         secp_ctx: &bitcoin::secp256k1::Secp256k1<bitcoin::secp256k1::All>,
     ) -> Result<(), ()> {
@@ -295,16 +298,13 @@ impl ExternalSigner {
                     && i.previous_output.vout == outpoint.index as u32
             })
             .ok_or(())?;
-        let account_xpriv = match derived_match.account.as_str() {
+        let account_xpriv = match derived_match.account_name.as_str() {
             "colored" => self.rgb_account_xpriv(true)?,
             "vanilla" => self.rgb_account_xpriv(false)?,
             _ => return Err(()),
         };
         let child_xpriv = account_xpriv
-            .derive_priv(
-                secp_ctx,
-                &Self::derivation_path_from_debug_match(derived_match)?,
-            )
+            .derive_priv(secp_ctx, &Self::derivation_path_from_match(derived_match)?)
             .map_err(|_| ())?;
         let pubkey = bitcoin::PublicKey::new(Xpub::from_priv(secp_ctx, &child_xpriv).public_key);
         let expected_script = Address::p2wpkh(
@@ -565,7 +565,7 @@ impl RlnKeysInterface for ExternalSigner {
                 } => {
                     let script_pubkey_hex = output.script_pubkey.to_hex_string();
                     if let Some(derived_match) =
-                        self.debug_derived_match_for_script(&script_pubkey_hex)?
+                        self.find_derivation_match_for_script(&script_pubkey_hex)?
                     {
                         self.sign_static_output_input(
                             outpoint,

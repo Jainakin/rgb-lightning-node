@@ -34,7 +34,7 @@ mod tests {
     use super::*;
     use crate::signer::proto::{decode_signer_response, encode_signer_request};
     use crate::signer::types::{
-        BootstrapData, DebugDerivedAddress, ExternalChannelRequest, ExternalNodeRequest,
+        BootstrapData, DerivedAddressMatch, ExternalChannelRequest, ExternalNodeRequest,
         ExternalNodeResponse, ExternalSignerResponse, SignerIdentity, WalletInputMetadata,
     };
     use crate::signer::vls_adapter::ExternalSignerBackend;
@@ -149,11 +149,11 @@ mod tests {
             Ok(None)
         }
 
-        fn debug_derive_addresses(
+        fn find_derivation_matches_for_script(
             &self,
             _script_pubkey_hex: String,
             _max_index: u32,
-        ) -> Result<Vec<DebugDerivedAddress>, RlnSignerError> {
+        ) -> Result<Vec<DerivedAddressMatch>, RlnSignerError> {
             Ok(Vec::new())
         }
     }

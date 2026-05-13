@@ -1,7 +1,7 @@
 use super::proto::{decode_signer_response, encode_signer_request};
 use super::transport::ExternalSignerTransport;
 use super::types::{
-    BootstrapData, ChannelPublicKeys, DebugDerivedAddress, ExternalChannelRequest,
+    BootstrapData, ChannelPublicKeys, DerivedAddressMatch, ExternalChannelRequest,
     ExternalNodeRequest, ExternalNodeResponse, ExternalSignerRequest, ExternalSignerResponse,
     RlnSignerError, SpendableOutputUtxo, WalletInputMetadata,
 };
@@ -51,11 +51,11 @@ pub(crate) trait ExternalSignerBackend: Send + Sync {
         script_pubkey_hex: Option<String>,
         amount_sat: Option<u64>,
     ) -> Result<Option<WalletInputMetadata>, RlnSignerError>;
-    fn debug_derive_addresses(
+    fn find_derivation_matches_for_script(
         &self,
         script_pubkey_hex: String,
         max_index: u32,
-    ) -> Result<Vec<DebugDerivedAddress>, RlnSignerError>;
+    ) -> Result<Vec<DerivedAddressMatch>, RlnSignerError>;
 }
 
 /// Adapter that maps RLN operations to the external signer protocol contract
@@ -227,18 +227,18 @@ impl ExternalSignerBackend for VlsSignerAdapter {
         }
     }
 
-    fn debug_derive_addresses(
+    fn find_derivation_matches_for_script(
         &self,
         script_pubkey_hex: String,
         max_index: u32,
-    ) -> Result<Vec<DebugDerivedAddress>, RlnSignerError> {
-        match self.call(ExternalSignerRequest::DebugDeriveAddresses {
+    ) -> Result<Vec<DerivedAddressMatch>, RlnSignerError> {
+        match self.call(ExternalSignerRequest::FindDerivationMatches {
             script_pubkey_hex,
             max_index,
         })? {
-            ExternalSignerResponse::DebugDeriveAddresses { matches } => Ok(matches),
+            ExternalSignerResponse::FindDerivationMatches { matches } => Ok(matches),
             other => Err(RlnSignerError::Protocol(format!(
-                "unexpected response for debug_derive_addresses: {other:?}"
+                "unexpected response for find_derivation_matches_for_script: {other:?}"
             ))),
         }
     }

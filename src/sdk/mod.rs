@@ -4192,11 +4192,11 @@ mod tests {
             Self::unsupported()
         }
 
-        fn debug_derive_addresses(
+        fn find_derivation_matches_for_script(
             &self,
             _script_pubkey_hex: String,
             _max_index: u32,
-        ) -> Result<Vec<crate::signer::types::DebugDerivedAddress>, RlnSignerError> {
+        ) -> Result<Vec<crate::signer::types::DerivedAddressMatch>, RlnSignerError> {
             Self::unsupported()
         }
     }
