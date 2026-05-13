@@ -526,3 +526,161 @@ fn rgb_native_external_signer_mixed_one_hop_payment_quick() {
         panic!("rgb_native_external_signer_mixed_one_hop_payment_quick failed");
     }
 }
+
+/// Mixed internal/external RGB channel: one RGB payment followed by cooperative close must settle
+/// balances back on-chain.
+#[test]
+#[serial]
+fn rgb_native_external_signer_mixed_one_hop_payment_coop_close_settles_to_chain() {
+    ensure_regtest_available();
+    let _guard = env_lock().lock().unwrap_or_else(|e| e.into_inner());
+
+    const PORT_OFF: u16 = 210;
+    const PAY_ASSET: u64 = 50;
+    let da = NODE_A_DAEMON_PORT + PORT_OFF;
+    let pa = NODE_A_PEER_PORT + PORT_OFF;
+    let db = NODE_B_DAEMON_PORT + PORT_OFF;
+    let pb = NODE_B_PEER_PORT + PORT_OFF;
+
+    let test_dir = test_dir("sdk_rgb_native_external_close_settles");
+    if test_dir.exists() {
+        fs::remove_dir_all(&test_dir).expect("remove previous lib_sdk test dir");
+    }
+    fs::create_dir_all(&test_dir).expect("create lib_sdk test dir");
+    let node_a_dir = test_dir.join("node_a");
+    let node_b_dir = test_dir.join("node_b");
+    let signer_b_dir = test_dir.join("signer_b");
+
+    let signer_b = make_native_signer(&signer_b_dir, None);
+
+    let node_a = make_node(&node_a_dir, da, pa);
+    let node_b = make_node(&node_b_dir, db, pb);
+
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        node_a
+            .init("nodeApass".to_string(), None)
+            .expect("node A init");
+        node_b
+            .init_with_native_external_signer(signer_b.clone())
+            .expect("node B init native external signer");
+
+        node_a
+            .unlock(unlock_request("nodeApass"))
+            .expect("node A unlock");
+        node_b
+            .unlock_with_native_external_signer(
+                signer_b.clone(),
+                "user".to_string(),
+                "password".to_string(),
+                "localhost".to_string(),
+                18443,
+                Some("127.0.0.1:50001".to_string()),
+                Some(PROXY_ENDPOINT_LOCAL.to_string()),
+                vec![],
+                Some("RLN_rgb_native_close".to_string()),
+            )
+            .expect("node B unlock native external signer");
+
+        fund_and_create_utxos(&node_a, "node A close");
+        node_a
+            .createutxos(SdkCreateUtxosRequest {
+                up_to: false,
+                num: Some(25),
+                size: None,
+                fee_rate: CREATE_UTXOS_FEE_RATE,
+                skip_sync: false,
+            })
+            .expect("node A createutxos (extra RGB allocation headroom)");
+        ensure_funded(&node_b, 200_000, "node B close");
+        mine(1);
+        node_a.sync().expect("node A sync after fund");
+        node_b.sync().expect("node B sync after fund");
+
+        let asset_id = node_a
+            .issueassetnia(SdkIssueAssetNiaRequest {
+                amounts: vec![1_000],
+                ticker: "QCLS".to_string(),
+                name: "QuickCloseRgb".to_string(),
+                precision: 0,
+            })
+            .expect("issueassetnia")
+            .asset_id;
+
+        let node_b_pubkey = node_b.node_info().expect("node B node_info").pubkey;
+        let peer_uri = format!("{node_b_pubkey}@127.0.0.1:{pb}");
+        node_a.connectpeer(peer_uri.clone()).expect("connectpeer");
+
+        node_a
+            .openchannel(SdkOpenChannelRequest {
+                peer_pubkey_and_opt_addr: peer_uri,
+                capacity_sat: OPEN_CHANNEL_CAPACITY_SAT,
+                push_msat: OPEN_CHANNEL_PUSH_MSAT,
+                public: false,
+                with_anchors: true,
+                fee_base_msat: None,
+                fee_proportional_millionths: None,
+                temporary_channel_id: None,
+                asset_id: Some(asset_id.clone()),
+                asset_amount: Some(OPEN_CHANNEL_ASSET_AMOUNT),
+                push_asset_amount: None,
+                virtual_open_mode: None,
+            })
+            .expect("openchannel");
+
+        wait_for_channel_funding_tx(&node_a, &node_b, &asset_id, Duration::from_secs(90));
+        mine(OPEN_CHANNEL_CONFIRM_BLOCKS);
+        wait_for_usable_channel(&node_a, &node_b, &asset_id, Duration::from_secs(300));
+        let channel_id = node_a
+            .list_channels()
+            .expect("node A list_channels after channel ready")
+            .into_iter()
+            .find(|channel| channel.asset_id.as_ref() == Some(&asset_id) && channel.is_usable)
+            .expect("usable RGB channel on node A")
+            .channel_id;
+
+        let invoice = node_b
+            .ln_invoice(LnInvoiceRequest {
+                amt_msat: Some(PAYMENT_MSAT),
+                expiry_sec: 900,
+                asset_id: Some(asset_id.clone()),
+                asset_amount: Some(PAY_ASSET),
+                payment_hash: None,
+                description_hash: None,
+            })
+            .expect("ln_invoice")
+            .invoice;
+
+        let send = node_a
+            .sendpayment(SdkSendPaymentRequest {
+                invoice: invoice.to_string(),
+                amt_msat: None,
+                asset_id: None,
+                asset_amount: None,
+            })
+            .expect("sendpayment");
+        let payment_hash = send.payment_hash.expect("payment_hash");
+
+        wait_for_payment_status(&node_a, &payment_hash, Duration::from_secs(120));
+        wait_for_payment_status(&node_b, &payment_hash, Duration::from_secs(120));
+        wait_for_ln_balance(
+            &node_a,
+            &asset_id,
+            OPEN_CHANNEL_ASSET_AMOUNT - PAY_ASSET,
+            Duration::from_secs(120),
+        );
+
+        close_channel(&node_a, channel_id, node_b_pubkey);
+        wait_for_balance(&node_a, &asset_id, 950, Duration::from_secs(120));
+        wait_for_balance(&node_b, &asset_id, PAY_ASSET, Duration::from_secs(120));
+
+        node_a.shutdown();
+        node_b.shutdown();
+        thread::sleep(Duration::from_millis(300));
+    }));
+
+    if result.is_err() {
+        panic!(
+            "rgb_native_external_signer_mixed_one_hop_payment_coop_close_settles_to_chain failed"
+        );
+    }
+}

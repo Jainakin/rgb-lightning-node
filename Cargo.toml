@@ -72,10 +72,12 @@ tracing-appender = "0.2.3"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 typenum = "1.17.0"
 uuid = { version = "1.11.0", default-features = false, features = ["v4"] }
+# `vls-protocol` remains on crates.io; only `vls-core` and
+# `vls-protocol-signer` need the RGB compatibility forks.
 vls-protocol = "0.14.0"
 vls-protocol-client = "0.14.0"
 vls-protocol-signer = "0.14.0"
-# Patched `vls-core` (see `vendor/vls-core-rgb/UTEXO-RGB-PATCH.md`): enable `rgb-commitment-compat`.
+# Use the remote RGB compatibility fork for `vls-core`.
 lightning-signer = { package = "vls-core", version = "0.14.0", features = ["rgb-commitment-compat"] }
 walkdir = "2.5.0"
 uniffi = { version = "0.28.3", features = ["build"], optional = true }
@@ -102,9 +104,9 @@ lightning-invoice = { git = "https://github.com/rmn-boiko/rust-lightning.git", b
 lightning-net-tokio = { git = "https://github.com/rmn-boiko/rust-lightning.git", branch = "feat/external-signer-compatibility" }
 lightning-persister = { git = "https://github.com/rmn-boiko/rust-lightning.git", branch = "feat/external-signer-compatibility" }
 lightning-rapid-gossip-sync = { git = "https://github.com/rmn-boiko/rust-lightning.git", branch = "feat/external-signer-compatibility" }
-# Patched `vls-core`: use RGB compatibility branch and feature `rgb-commitment-compat`.
+# Use the remote RGB compatibility branches; no sibling local checkout required.
 vls-core = { git = "https://github.com/rmn-boiko/vls-core.git", branch = "feat/rgb-compatibility" }
-# Patched signer handler: use RGB compatibility branch.
+# Use the remote RGB compatibility fork for the signer protocol adapter.
 vls-protocol-signer = { git = "https://github.com/rmn-boiko/vls-protocol-signer.git", branch = "feat/rgb-compatibility" }
 
 [lints.rust.unexpected_cfgs]

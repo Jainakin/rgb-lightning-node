@@ -2687,9 +2687,16 @@ impl OutputSpender for RgbOutputSpender {
                     Some(vout),
                 )
             }));
-            if let Err(e) = res {
-                tracing::error!("cannot post consignment: {e}");
-                return Err(());
+            match res {
+                Ok(Ok(())) => {}
+                Ok(Err(e)) => {
+                    tracing::error!("cannot post consignment: {e}");
+                    return Err(());
+                }
+                Err(e) => {
+                    tracing::error!("cannot post consignment task: {e}");
+                    return Err(());
+                }
             }
             fs::remove_file(&consignment_path).unwrap();
         }

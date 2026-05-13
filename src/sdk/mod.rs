@@ -4191,6 +4191,14 @@ mod tests {
         ) -> Result<Option<WalletInputMetadata>, RlnSignerError> {
             Self::unsupported()
         }
+
+        fn debug_derive_addresses(
+            &self,
+            _script_pubkey_hex: String,
+            _max_index: u32,
+        ) -> Result<Vec<crate::signer::types::DebugDerivedAddress>, RlnSignerError> {
+            Self::unsupported()
+        }
     }
 
     fn attach_test_external_signer(

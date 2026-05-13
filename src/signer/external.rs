@@ -1,12 +1,15 @@
 use std::sync::Arc;
 
+use bitcoin::bip32::{ChildNumber, DerivationPath, Xpriv, Xpub};
 use bitcoin::hex::DisplayHex;
 use bitcoin::hex::FromHex;
 use bitcoin::psbt::ExtractTxError;
 use bitcoin::script::ScriptBuf;
 use bitcoin::secp256k1::ecdh::SharedSecret;
 use bitcoin::secp256k1::ecdsa::{RecoverableSignature, RecoveryId, Signature};
-use bitcoin::secp256k1::{PublicKey, Scalar};
+use bitcoin::secp256k1::{Message, PublicKey, Scalar};
+use bitcoin::sighash::{EcdsaSighashType, SighashCache};
+use bitcoin::Address;
 use bitcoin::Psbt;
 use lightning::ln::msgs::UnsignedGossipMessage;
 use lightning::ln::script::ShutdownScript;
@@ -23,9 +26,10 @@ use super::channel_signer::ExternalChannelSigner;
 use super::entropy::SystemEntropySource;
 use super::transport::ExternalSignerTransport;
 use super::types::{
-    validate_bootstrap_ldk_auxiliary_keys, BootstrapData, ExternalNodeRequest,
-    ExternalNodeResponse, ExternalSignerRequest, ExternalSignerResponse, RgbWalletAccountInfo,
-    RlnSignerError, SpendableOutputUtxo, WalletInputMetadata,
+    async_payments_root_seed_bytes, validate_bootstrap_ldk_auxiliary_keys, BootstrapData,
+    DebugDerivedAddress, ExternalNodeRequest, ExternalNodeResponse, ExternalSignerRequest,
+    ExternalSignerResponse, RgbWalletAccountInfo, RlnSignerError, SpendableOutputUtxo,
+    WalletInputMetadata,
 };
 use super::vls_adapter::{ExternalSignerBackend, VlsSignerAdapter};
 use super::RlnEntropySource;
@@ -52,6 +56,7 @@ pub(crate) struct ExternalSigner {
     ldk_inbound_payment_key: [u8; 32],
     ldk_peer_storage_key: [u8; 32],
     ldk_receive_auth_key: [u8; 32],
+    signer_seed: [u8; 32],
 }
 
 #[derive(Clone)]
@@ -73,6 +78,7 @@ impl ExternalSigner {
     ) -> Result<Self, RlnSignerError> {
         let (ldk_inbound_payment_key, ldk_peer_storage_key, ldk_receive_auth_key) =
             Self::ldk_aux_from_bootstrap(&attachment.bootstrap)?;
+        let signer_seed = async_payments_root_seed_bytes(&attachment.bootstrap)?;
         let backend: Arc<dyn ExternalSignerBackend> =
             Arc::new(VlsSignerAdapter::new(Arc::clone(&attachment.transport)));
         Ok(Self {
@@ -80,6 +86,7 @@ impl ExternalSigner {
             ldk_inbound_payment_key,
             ldk_peer_storage_key,
             ldk_receive_auth_key,
+            signer_seed,
         })
     }
 
@@ -158,26 +165,51 @@ impl ExternalSigner {
         }
     }
 
-    fn spendable_descriptor_to_utxo(d: &SpendableOutputDescriptor) -> SpendableOutputUtxo {
-        match d {
+    fn spendable_descriptor_to_utxo(
+        &self,
+        d: &SpendableOutputDescriptor,
+    ) -> Result<SpendableOutputUtxo, ()> {
+        Ok(match d {
             SpendableOutputDescriptor::StaticOutput {
-                outpoint, output, ..
-            } => SpendableOutputUtxo {
-                txid_hex: outpoint.txid.to_string(),
-                vout: outpoint.index as u32,
-                amount_sat: output.value.to_sat(),
-                keyindex: 1,
-                is_p2sh: false,
-                script_pubkey_hex: String::new(),
-                is_in_coinbase: false,
-            },
+                outpoint,
+                output,
+                channel_keys_id,
+            } => {
+                let script_pubkey_hex = output.script_pubkey.to_hex_string();
+                let mut keyindex = self
+                    .debug_keyindex_for_script(&script_pubkey_hex)?
+                    .unwrap_or(0);
+                if keyindex == 0 {
+                    if let Some(channel_keys_id) = channel_keys_id {
+                        if self
+                            .backend
+                            .node_get_destination_script(channel_keys_id.to_lower_hex_string())
+                            .map(|script| script.eq_ignore_ascii_case(&script_pubkey_hex))
+                            .unwrap_or(false)
+                        {
+                            let mut dbid_bytes = [0u8; 8];
+                            dbid_bytes.copy_from_slice(&channel_keys_id[..8]);
+                            keyindex = u64::from_be_bytes(dbid_bytes).try_into().map_err(|_| ())?;
+                        }
+                    }
+                }
+                SpendableOutputUtxo {
+                    txid_hex: outpoint.txid.to_string(),
+                    vout: outpoint.index as u32,
+                    amount_sat: output.value.to_sat(),
+                    keyindex,
+                    is_p2sh: false,
+                    script_pubkey_hex,
+                    is_in_coinbase: false,
+                }
+            }
             SpendableOutputDescriptor::DelayedPaymentOutput(o) => SpendableOutputUtxo {
                 txid_hex: o.outpoint.txid.to_string(),
                 vout: o.outpoint.index as u32,
                 amount_sat: o.output.value.to_sat(),
                 keyindex: 0,
                 is_p2sh: false,
-                script_pubkey_hex: String::new(),
+                script_pubkey_hex: o.output.script_pubkey.to_hex_string(),
                 is_in_coinbase: false,
             },
             SpendableOutputDescriptor::StaticPaymentOutput(o) => SpendableOutputUtxo {
@@ -186,10 +218,121 @@ impl ExternalSigner {
                 amount_sat: o.output.value.to_sat(),
                 keyindex: 0,
                 is_p2sh: false,
-                script_pubkey_hex: String::new(),
+                script_pubkey_hex: o.output.script_pubkey.to_hex_string(),
                 is_in_coinbase: false,
             },
+        })
+    }
+
+    fn rgb_coin_type(rgb: bool) -> u32 {
+        if rgb {
+            827_167
+        } else {
+            1
         }
+    }
+
+    fn rgb_account_derivation_path(rgb: bool) -> DerivationPath {
+        DerivationPath::from(vec![
+            ChildNumber::from_hardened_idx(86).expect("valid purpose"),
+            ChildNumber::from_hardened_idx(Self::rgb_coin_type(rgb)).expect("valid coin type"),
+            ChildNumber::from_hardened_idx(0).expect("valid account"),
+        ])
+    }
+
+    fn rgb_account_xpriv(&self, rgb: bool) -> Result<Xpriv, ()> {
+        let secp = bitcoin::secp256k1::Secp256k1::signing_only();
+        Xpriv::new_master(bitcoin::Network::Regtest, &self.signer_seed)
+            .map_err(|_| ())?
+            .derive_priv(&secp, &Self::rgb_account_derivation_path(rgb))
+            .map_err(|_| ())
+    }
+
+    fn derivation_path_from_debug_match(m: &DebugDerivedAddress) -> Result<DerivationPath, ()> {
+        if m.derivation.is_empty() {
+            return Ok(DerivationPath::from(Vec::<ChildNumber>::new()));
+        }
+        let mut path = Vec::new();
+        for segment in m.derivation.split('/') {
+            let idx = segment.parse::<u32>().map_err(|_| ())?;
+            path.push(ChildNumber::from_normal_idx(idx).map_err(|_| ())?);
+        }
+        Ok(DerivationPath::from(path))
+    }
+
+    fn debug_derived_match_for_script(
+        &self,
+        script_pubkey_hex: &str,
+    ) -> Result<Option<DebugDerivedAddress>, ()> {
+        const MAX_DEBUG_DERIVATION_INDEX: u32 = 10_000;
+        let matches = self
+            .backend
+            .debug_derive_addresses(script_pubkey_hex.to_string(), MAX_DEBUG_DERIVATION_INDEX)
+            .map_err(|_| ())?;
+        Ok(matches.first().cloned())
+    }
+
+    fn debug_keyindex_for_script(&self, script_pubkey_hex: &str) -> Result<Option<u32>, ()> {
+        Ok(self
+            .debug_derived_match_for_script(script_pubkey_hex)?
+            .map(|m| m.keyindex))
+    }
+
+    fn sign_static_output_input(
+        &self,
+        outpoint: &lightning::chain::transaction::OutPoint,
+        output: &bitcoin::TxOut,
+        derived_match: &DebugDerivedAddress,
+        psbt: &mut Psbt,
+        secp_ctx: &bitcoin::secp256k1::Secp256k1<bitcoin::secp256k1::All>,
+    ) -> Result<(), ()> {
+        let input_idx = psbt
+            .unsigned_tx
+            .input
+            .iter()
+            .position(|i| {
+                i.previous_output.txid == outpoint.txid
+                    && i.previous_output.vout == outpoint.index as u32
+            })
+            .ok_or(())?;
+        let account_xpriv = match derived_match.account.as_str() {
+            "colored" => self.rgb_account_xpriv(true)?,
+            "vanilla" => self.rgb_account_xpriv(false)?,
+            _ => return Err(()),
+        };
+        let child_xpriv = account_xpriv
+            .derive_priv(
+                secp_ctx,
+                &Self::derivation_path_from_debug_match(derived_match)?,
+            )
+            .map_err(|_| ())?;
+        let pubkey = bitcoin::PublicKey::new(Xpub::from_priv(secp_ctx, &child_xpriv).public_key);
+        let expected_script = Address::p2wpkh(
+            &bitcoin::CompressedPublicKey::try_from(pubkey).map_err(|_| ())?,
+            bitcoin::Network::Regtest,
+        )
+        .script_pubkey();
+        if expected_script != output.script_pubkey {
+            return Err(());
+        }
+        let sighash = Message::from(
+            SighashCache::new(&psbt.unsigned_tx)
+                .p2wpkh_signature_hash(
+                    input_idx,
+                    &expected_script,
+                    output.value,
+                    EcdsaSighashType::All,
+                )
+                .map_err(|_| ())?,
+        );
+        let sig = secp_ctx.sign_ecdsa(&sighash, &child_xpriv.private_key);
+        let mut sig_ser = sig.serialize_der().to_vec();
+        sig_ser.push(EcdsaSighashType::All as u8);
+        psbt.inputs[input_idx].final_script_witness = Some(bitcoin::Witness::from_slice(&[
+            &sig_ser,
+            &pubkey.inner.serialize().to_vec(),
+        ]));
+        Ok(())
     }
 }
 
@@ -411,18 +554,41 @@ impl RlnKeysInterface for ExternalSigner {
     fn sign_spendable_outputs_psbt(
         &self,
         descriptors: &[&SpendableOutputDescriptor],
-        psbt: Psbt,
-        _secp_ctx: &bitcoin::secp256k1::Secp256k1<bitcoin::secp256k1::All>,
+        mut psbt: Psbt,
+        secp_ctx: &bitcoin::secp256k1::Secp256k1<bitcoin::secp256k1::All>,
     ) -> Result<Psbt, ()> {
-        let utxos: Vec<SpendableOutputUtxo> = descriptors
-            .iter()
-            .map(|d| Self::spendable_descriptor_to_utxo(d))
-            .collect();
-        let signed_psbt = self
-            .backend
-            .sign_spendable_outputs_psbt(utxos, psbt.to_string())
-            .map_err(|_| ())?;
-        Psbt::from_str(&signed_psbt).map_err(|_| ())
+        let mut backend_utxos = Vec::new();
+        for descriptor in descriptors {
+            match descriptor {
+                SpendableOutputDescriptor::StaticOutput {
+                    outpoint, output, ..
+                } => {
+                    let script_pubkey_hex = output.script_pubkey.to_hex_string();
+                    if let Some(derived_match) =
+                        self.debug_derived_match_for_script(&script_pubkey_hex)?
+                    {
+                        self.sign_static_output_input(
+                            outpoint,
+                            output,
+                            &derived_match,
+                            &mut psbt,
+                            secp_ctx,
+                        )?;
+                    } else {
+                        backend_utxos.push(self.spendable_descriptor_to_utxo(descriptor)?);
+                    }
+                }
+                _ => backend_utxos.push(self.spendable_descriptor_to_utxo(descriptor)?),
+            }
+        }
+        if !backend_utxos.is_empty() {
+            let signed_psbt = self
+                .backend
+                .sign_spendable_outputs_psbt(backend_utxos, psbt.to_string())
+                .map_err(|_| ())?;
+            psbt = Psbt::from_str(&signed_psbt).map_err(|_| ())?;
+        }
+        Ok(psbt)
     }
 
     fn sign_rgb_psbt(

@@ -34,8 +34,8 @@ mod tests {
     use super::*;
     use crate::signer::proto::{decode_signer_response, encode_signer_request};
     use crate::signer::types::{
-        BootstrapData, ExternalChannelRequest, ExternalNodeRequest, ExternalNodeResponse,
-        ExternalSignerResponse, SignerIdentity, WalletInputMetadata,
+        BootstrapData, DebugDerivedAddress, ExternalChannelRequest, ExternalNodeRequest,
+        ExternalNodeResponse, ExternalSignerResponse, SignerIdentity, WalletInputMetadata,
     };
     use crate::signer::vls_adapter::ExternalSignerBackend;
 
@@ -147,6 +147,14 @@ mod tests {
             _amount_sat: Option<u64>,
         ) -> Result<Option<WalletInputMetadata>, RlnSignerError> {
             Ok(None)
+        }
+
+        fn debug_derive_addresses(
+            &self,
+            _script_pubkey_hex: String,
+            _max_index: u32,
+        ) -> Result<Vec<DebugDerivedAddress>, RlnSignerError> {
+            Ok(Vec::new())
         }
     }
 

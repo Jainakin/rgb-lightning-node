@@ -1,9 +1,9 @@
 use super::proto::{decode_signer_response, encode_signer_request};
 use super::transport::ExternalSignerTransport;
 use super::types::{
-    BootstrapData, ChannelPublicKeys, ExternalChannelRequest, ExternalNodeRequest,
-    ExternalNodeResponse, ExternalSignerRequest, ExternalSignerResponse, RlnSignerError,
-    SpendableOutputUtxo, WalletInputMetadata,
+    BootstrapData, ChannelPublicKeys, DebugDerivedAddress, ExternalChannelRequest,
+    ExternalNodeRequest, ExternalNodeResponse, ExternalSignerRequest, ExternalSignerResponse,
+    RlnSignerError, SpendableOutputUtxo, WalletInputMetadata,
 };
 use std::sync::Arc;
 
@@ -51,6 +51,11 @@ pub(crate) trait ExternalSignerBackend: Send + Sync {
         script_pubkey_hex: Option<String>,
         amount_sat: Option<u64>,
     ) -> Result<Option<WalletInputMetadata>, RlnSignerError>;
+    fn debug_derive_addresses(
+        &self,
+        script_pubkey_hex: String,
+        max_index: u32,
+    ) -> Result<Vec<DebugDerivedAddress>, RlnSignerError>;
 }
 
 /// Adapter that maps RLN operations to the external signer protocol contract
@@ -218,6 +223,22 @@ impl ExternalSignerBackend for VlsSignerAdapter {
             ExternalSignerResponse::WalletInputMetadata { metadata } => Ok(metadata),
             other => Err(RlnSignerError::Protocol(format!(
                 "unexpected response for get_wallet_input_metadata: {other:?}"
+            ))),
+        }
+    }
+
+    fn debug_derive_addresses(
+        &self,
+        script_pubkey_hex: String,
+        max_index: u32,
+    ) -> Result<Vec<DebugDerivedAddress>, RlnSignerError> {
+        match self.call(ExternalSignerRequest::DebugDeriveAddresses {
+            script_pubkey_hex,
+            max_index,
+        })? {
+            ExternalSignerResponse::DebugDeriveAddresses { matches } => Ok(matches),
+            other => Err(RlnSignerError::Protocol(format!(
+                "unexpected response for debug_derive_addresses: {other:?}"
             ))),
         }
     }
