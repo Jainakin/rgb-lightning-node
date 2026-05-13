@@ -442,13 +442,17 @@ jobs:
           echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
           bindgen --version
 
+      - name: Build host cdylib
+        run: cargo build --release --features "uniffi,vls" --lib
+
       - name: Generate Kotlin Android bindings
-        run: ./scripts/ci/uniffi_generate_kotlin_android.sh
+        run: ./scripts/ci/uniffi_generate_from_library.sh kotlin target/uniffi/kotlin-android target/release/librgb_lightning_node.so uniffi-android.toml
 
       - name: Build Android JNI libs
         env:
           AWS_LC_SYS_EXTERNAL_BINDGEN: "1"
           CMAKE: /usr/bin/cmake
+          UNIFFI_CARGO_FEATURES: "uniffi,vls"
         run: |
           export BINDGEN_EXTRA_CLANG_ARGS_x86_64_linux_android="--sysroot=${ANDROID_NDK_HOME}/toolchains/llvm/prebuilt/linux-x86_64/sysroot"
           ./scripts/ci/build_android_jni_x86_64.sh
