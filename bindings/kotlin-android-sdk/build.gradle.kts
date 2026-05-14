@@ -11,6 +11,12 @@ plugins {
 group = providers.gradleProperty("GROUP_ID").orElse("org.utexo").get()
 version = providers.gradleProperty("VERSION_NAME").orElse("0.0.0-dev").get()
 
+dependencies {
+    // UniFFI Kotlin bindings reference Pointer via JNA and Android API annotations.
+    api("net.java.dev.jna:jna:5.14.0@aar")
+    implementation("androidx.annotation:annotation:1.9.1")
+}
+
 val generatedBindingsDir = layout.projectDirectory.dir("../../target/uniffi/kotlin-android")
 val generatedJniDir = layout.projectDirectory.dir("../../target/uniffi/kotlin-android/jniLibs")
 
