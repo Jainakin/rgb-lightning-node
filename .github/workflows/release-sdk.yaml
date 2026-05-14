@@ -34,7 +34,8 @@ jobs:
       - name: Resolve version
         id: resolve
         run: |
-          VERSION="${{ inputs.version }}"
+          RAW_VERSION="${{ inputs.version }}"
+          VERSION="${RAW_VERSION#v}"
           TAG="v${VERSION}"
           PUBLISH_TO_MAVEN="${{ inputs.publish_to_maven }}"
           echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
