@@ -155,7 +155,19 @@ jobs:
             -PARTIFACT_ID="${ARTIFACT_ID}" \
             -PVERSION_NAME="${{ needs.resolve-version.outputs.version }}" \
             -Pjreleaser.gpg.keyName="${JRELEASER_GPG_KEY_NAME}" \
-            -Pjreleaser.gpg.passphrase="${JRELEASER_GPG_PASSPHRASE}"
+            -Pjreleaser.gpg.passphrase="${JRELEASER_GPG_PASSPHRASE}" \
+            --stacktrace \
+            --info
+
+      - name: Upload JReleaser debug outputs
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: jreleaser-debug
+          if-no-files-found: ignore
+          path: |
+            bindings/kotlin-android-sdk/build/jreleaser/**
+            bindings/kotlin-android-sdk/build/staging-deploy/**
 
       - name: Package Kotlin Android release bundle
         run: |
