@@ -13,6 +13,9 @@ on:
         default: true
         type: boolean
 
+permissions:
+  contents: write
+
 env:
   CARGO_TERM_COLOR: always
   KOTLIN_VERSION: 1.9.24
@@ -25,14 +28,17 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       version: ${{ steps.resolve.outputs.version }}
+      tag: ${{ steps.resolve.outputs.tag }}
       publish_to_maven: ${{ steps.resolve.outputs.publish_to_maven }}
     steps:
       - name: Resolve version
         id: resolve
         run: |
           VERSION="${{ inputs.version }}"
+          TAG="v${VERSION}"
           PUBLISH_TO_MAVEN="${{ inputs.publish_to_maven }}"
           echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+          echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
           echo "publish_to_maven=${PUBLISH_TO_MAVEN}" >> "$GITHUB_OUTPUT"
 
   kotlin-android:
@@ -247,7 +253,8 @@ jobs:
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: v${{ needs.resolve-version.outputs.version }}
+          tag_name: ${{ needs.resolve-version.outputs.tag }}
+          target_commitish: ${{ github.sha }}
           name: SDK v${{ needs.resolve-version.outputs.version }}
           body: |
             ## RGB Lightning Node SDK
