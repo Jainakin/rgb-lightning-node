@@ -8,7 +8,7 @@ plugins {
     id("org.jreleaser") version "1.19.0"
 }
 
-group = providers.gradleProperty("GROUP_ID").orElse("org.utexo").get()
+group = providers.gradleProperty("GROUP_ID").orElse("com.utexo").get()
 version = providers.gradleProperty("VERSION_NAME").orElse("0.0.0-dev").get()
 
 dependencies {
@@ -113,7 +113,7 @@ jreleaser {
         licenseUrl.set("https://spdx.org/licenses/MIT.html")
 
         java {
-            groupId.set(providers.gradleProperty("GROUP_ID").orElse("org.utexo"))
+            groupId.set(providers.gradleProperty("GROUP_ID").orElse("com.utexo"))
             version.set("17")
         }
     }

@@ -141,7 +141,7 @@ jobs:
           echo "${{ secrets.GPG_SECRET_KEY }}" | gpg --batch --import
           gpg --list-secret-keys --keyid-format short
 
-          GROUP_ID="${MAVEN_GROUP_ID:-org.utexo}"
+          GROUP_ID="${MAVEN_GROUP_ID:-com.utexo}"
           ARTIFACT_ID="${MAVEN_ARTIFACT_ID:-rgb-lightning-node-android}"
           gradle -p bindings/kotlin-android-sdk \
             publish \
