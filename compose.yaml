@@ -25,4 +25,6 @@ services:
   proxy:
     image: ghcr.io/rgb-tools/rgb-proxy-server:0.3.0
     ports:
-      - 3000:3000
+      # Expose on host :3001 (container still listens on :3000) so we
+      # don't clash with Expo's dev server, which defaults to :3000.
+      - 3001:3000
