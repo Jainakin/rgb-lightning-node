@@ -66,6 +66,8 @@ jobs:
 
       - name: Setup Gradle
         uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: "8.10.2"
 
       - name: Setup Android SDK
         uses: android-actions/setup-android@v3
@@ -134,18 +136,19 @@ jobs:
           JRELEASER_GPG_KEY_NAME: ${{ secrets.GPG_KEY_NAME }}
           JRELEASER_GPG_PASSPHRASE: ${{ secrets.GPG_PASSPHRASE }}
         run: |
+          gradle --version
           echo "${{ secrets.GPG_SECRET_KEY }}" | gpg --batch --import
           gpg --list-secret-keys --keyid-format short
 
           GROUP_ID="${MAVEN_GROUP_ID:-org.utexo}"
           ARTIFACT_ID="${MAVEN_ARTIFACT_ID:-rgb-lightning-node-android}"
-          ./gradlew -p bindings/kotlin-android-sdk \
+          gradle -p bindings/kotlin-android-sdk \
             publish \
             -PGROUP_ID="${GROUP_ID}" \
             -PARTIFACT_ID="${ARTIFACT_ID}" \
             -PVERSION_NAME="${{ needs.resolve-version.outputs.version }}"
 
-          ./gradlew -p bindings/kotlin-android-sdk \
+          gradle -p bindings/kotlin-android-sdk \
             jreleaserDeploy \
             -PGROUP_ID="${GROUP_ID}" \
             -PARTIFACT_ID="${ARTIFACT_ID}" \
