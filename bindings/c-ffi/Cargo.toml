@@ -7,7 +7,11 @@ build = "build.rs"
 publish = false
 
 [lib]
-crate-type = ["staticlib"]
+# `staticlib` is what mobile + napi consumers ultimately link against
+# (`librlncffi.a`). `rlib` is what Rust-side consumers like the napi-rs
+# crate in `rgb-lightning-node-nodejs` use to call our wrappers without
+# duplicating the extern-"C" surface declaration on their side.
+crate-type = ["staticlib", "rlib"]
 name = "rlncffi"
 
 [dependencies]

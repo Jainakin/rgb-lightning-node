@@ -7,6 +7,40 @@ use crate::NodeHandle;
 
 use super::types::{uniffi_state_slot, RlnError};
 
+// Last APIError detail, captured at the moment `map_api_error` collapses
+// a rich `APIError` into the coarse `RlnError` enum that crosses the
+// FFI boundary. The C-FFI's `Result -> CResult` conversion drains this
+// slot and appends the detail to the error message, so consumers see
+// the underlying APIError display (e.g. "AllocationsAlreadyAvailable",
+// "FailedBdkSync(...)", "UnsupportedInExternalSignerMode(...)") instead
+// of just "Conflict".
+//
+// Stored in thread-local rather than process-global state. Reasoning:
+// `map_api_error` runs synchronously on the caller thread (inside
+// `block_on_*`'s `.map_err`), and the C-FFI's `Result -> CResult`
+// conversion that drains the slot also runs synchronously on the same
+// caller thread. A process-global `Mutex<Option<String>>` would let
+// concurrent calls on different threads clobber each other's detail
+// between stash and drain — observed in stress tests as a parallel
+// failing call inheriting an unrelated error's detail string. The
+// `RefCell` here is single-threaded by construction and incurs no
+// locking.
+thread_local! {
+    static LAST_API_ERROR_DETAIL: std::cell::RefCell<Option<String>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+/// Drain the per-thread detail slot. Always call this from the same
+/// thread that produced the error (the C-FFI conversion satisfies this
+/// by construction).
+pub fn take_last_api_error_detail() -> Option<String> {
+    LAST_API_ERROR_DETAIL.with(|slot| slot.borrow_mut().take())
+}
+
+fn stash_api_error_detail(detail: String) {
+    LAST_API_ERROR_DETAIL.with(|slot| *slot.borrow_mut() = Some(detail));
+}
+
 fn lock_uniffi_state_slot() -> Result<std::sync::MutexGuard<'static, Option<NodeHandle>>, RlnError>
 {
     uniffi_state_slot().lock().map_err(|_| {
@@ -108,6 +142,9 @@ fn shared_uniffi_runtime() -> &'static tokio::runtime::Runtime {
 }
 
 pub(crate) fn map_api_error(err: APIError) -> RlnError {
+    // Capture the rich APIError display before the variant matching
+    // discards it. Drained by the C-FFI Result->CResult conversion.
+    stash_api_error_detail(format!("{err}"));
     match err {
         APIError::LockedNode | APIError::NotInitialized => RlnError::NotInitialized,
         APIError::PaymentNotFound(_)
@@ -207,6 +244,7 @@ pub(crate) fn map_api_error(err: APIError) -> RlnError {
 }
 
 pub(super) fn map_app_error(err: AppError) -> RlnError {
+    stash_api_error_detail(format!("{err}"));
     match err {
         AppError::UnavailablePort(_) | AppError::InvalidAuthenticationArgs => {
             RlnError::InvalidRequest
