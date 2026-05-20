@@ -592,22 +592,15 @@ impl RgbLibWalletWrapper {
     }
 
     pub(crate) fn get_rgb_wallet(&self) -> MutexGuard<'_, RgbLibWallet> {
-        // Poison recovery: if a previous thread panicked while holding
-        // this lock the mutex is left poisoned, and a naked `.unwrap()`
-        // would abort the entire process via `panic_cannot_unwind`
-        // (the panic crosses the bare runtime's `extern "C"` frames).
-        // That single panic would then cascade to a process crash on
-        // EVERY subsequent wallet op — an extremely bad failure mode
-        // for an embedded daemon. Recover the inner guard and log
-        // loudly so the original panic is investigable in the next
-        // run's tracing output.
+        // Recover from poisoning instead of unwrapping: a panic crossing
+        // `extern "C"` frames aborts via `panic_cannot_unwind`, which would
+        // cascade to every subsequent wallet op.
         match self.wallet.lock() {
             Ok(guard) => guard,
             Err(poisoned) => {
                 tracing::error!(
                     "RgbLibWallet mutex was poisoned by a prior panic; recovering. \
-                     Wallet state may be inconsistent — inspect earlier 'panicked at' lines \
-                     in the trace to find the originating failure."
+                     Wallet state may be inconsistent — inspect earlier 'panicked at' lines."
                 );
                 poisoned.into_inner()
             }
@@ -1117,16 +1110,10 @@ impl ChangeDestinationSource for RgbLibWalletWrapper {
 }
 
 impl WalletSource for RgbLibWalletWrapper {
+    // All three methods return Result<_, ()> to LDK. Unwrapping internally would
+    // poison the wallet mutex on panic and cascade aborts on every later op (see
+    // `get_rgb_wallet`), so each fallible step early-returns Err(()) with a log.
     fn list_confirmed_utxos<'a>(&'a self) -> AsyncResult<'a, Vec<Utxo>, ()> {
-        // Every fallible operation in this method used to be a bare
-        // `.unwrap()`. Because the wallet mutex is held while these
-        // run, any panic poisoned the mutex and every subsequent
-        // `lock().unwrap()` from another thread aborted the entire
-        // process via `panic_cannot_unwind` (panics cross the bare
-        // runtime's `extern "C"` boundary). LDK's `WalletSource`
-        // contract is `Result<_, ()>` precisely so we can fail
-        // gracefully instead — do that, with a tracing line per
-        // failure path so the trigger is visible.
         Box::pin(async move {
             let network = match Network::from_str(&self.bitcoin_network().to_string().to_lowercase()) {
                 Ok(n) => n,
@@ -1148,8 +1135,7 @@ impl WalletSource for RgbLibWalletWrapper {
                 let address = match Address::from_script(&script, network) {
                     Ok(a) => a,
                     Err(e) => {
-                        // Non-standard scripts are normal in mixed wallets;
-                        // skip with a debug log rather than aborting.
+                        // Non-standard scripts are expected in mixed wallets — debug, not error.
                         tracing::debug!(error = %e, "list_confirmed_utxos: skipping non-address script");
                         return None;
                     }
@@ -1191,10 +1177,6 @@ impl WalletSource for RgbLibWalletWrapper {
     }
 
     fn get_change_script<'a>(&'a self) -> AsyncResult<'a, ScriptBuf, ()> {
-        // Same hardening as `list_confirmed_utxos`: chain of `.unwrap()`s
-        // → cascade of process aborts. Convert each step to early-return
-        // Err(()), so a bad wallet/address state surfaces as an LDK
-        // `WalletSource` error rather than killing the daemon.
         Box::pin(async move {
             let addr_str = match self.get_rgb_wallet().get_address() {
                 Ok(a) => a,
@@ -1215,7 +1197,6 @@ impl WalletSource for RgbLibWalletWrapper {
     }
 
     fn sign_psbt<'a>(&'a self, tx: Psbt) -> AsyncResult<'a, Transaction, ()> {
-        // Same hardening — see `list_confirmed_utxos`.
         Box::pin(async move {
             let sign_options = SignOptions {
                 trust_witness_utxo: true,

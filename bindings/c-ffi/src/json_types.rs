@@ -181,9 +181,7 @@ impl From<JsonSdkUnlockRequest> for SdkUnlockRequest {
     }
 }
 
-// External-signer unlock variant: same shape as `JsonSdkUnlockRequest` but
-// without `password` — in external-signer mode the seed never reaches RLN
-// and there is no encrypted-mnemonic blob to unlock with a password.
+// External-signer mode has no password: the seed never reaches RLN.
 #[derive(Debug, Deserialize)]
 pub(crate) struct JsonSdkExternalUnlockRequest {
     pub bitcoind_rpc_username: String,
@@ -200,10 +198,8 @@ pub(crate) struct JsonSdkExternalUnlockRequest {
     pub announce_alias: Option<String>,
 }
 
-// Mirror of `SdkExternalSignerBootstrap` carrying the same fields. Used for
-// both directions: native-signer output (Serialize) and host-implemented
-// signer input (Deserialize, when the caller wants to pass a raw bootstrap
-// dict to `init_with_external_signer`).
+// Bidirectional: Serialize for native-signer output, Deserialize for a host
+// passing a raw bootstrap dict into `init_with_external_signer`.
 #[derive(Debug, Deserialize, Serialize)]
 pub(crate) struct JsonSdkExternalSignerBootstrap {
     pub node_id: String,

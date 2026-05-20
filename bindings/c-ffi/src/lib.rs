@@ -22,19 +22,11 @@ use std::{
     sync::Arc,
 };
 
-// Re-exported so utils.rs can refer to it via `super::RlnError` without an
-// explicit import in every helper.
 use rgb_lightning_node::RlnError;
 
-/// Wrap an FFI entry-point body so any panic from rgb-lib / LDK / BDK
-/// is caught and converted into an `Error::Panic` instead of unwinding
-/// across `extern "C"` and aborting the process. Every `rln_*` entry
-/// point must go through this macro.
-///
-/// The closure is passed as `&mut dyn FnMut` (not `impl FnOnce`) so
-/// the optimiser can't see through the call and elide the surrounding
-/// `catch_unwind` — see the `catch_panic` doc comment for the full
-/// story.
+/// Wrap an FFI entry-point body so any panic is caught instead of unwinding
+/// across `extern "C"` and aborting the process. Every `rln_*` entry point
+/// must go through this macro. See `catch_panic` for the closure-type details.
 macro_rules! ffi_call {
     ($label:expr, $body:expr) => {{
         let mut closure = || $body;
@@ -56,11 +48,8 @@ pub enum CResultValue {
 
 #[repr(C)]
 pub struct CResult {
-    // Fields are `pub` so non-C consumers (e.g. the napi-rs Node binding
-    // in `rgb-lightning-node-nodejs`, which links against this crate as
-    // a normal `rlib`) can destructure the result. The `#[repr(C)]`
-    // attribute already commits to a fixed ABI so exposing the fields
-    // doesn't broaden the C interface.
+    // Fields are `pub` so Rust consumers linking the `rlib` (e.g. the napi-rs
+    // binding) can destructure. `#[repr(C)]` already fixes the ABI.
     pub result: CResultValue,
     pub inner: COpaqueStruct,
 }
@@ -553,12 +542,8 @@ pub extern "C" fn rln_sdk_shutdown() -> CResultString {
 // External-signer surface
 // ---------------------------------------------------------------------------
 
-/// Drop a `NativeExternalSigner` handle previously returned by
-/// `rln_native_external_signer_new`. The underlying VLS signer state stays
-/// alive as long as RLN holds its own `Arc` clone (after attach/init); the
-/// caller is therefore safe to free their handle immediately after
-/// `rln_sdk_node_attach_native_external_signer` / `..._init_with_...` /
-/// `..._unlock_with_...` succeeds, even while the node is still running.
+/// Drop a `NativeExternalSigner` handle. Safe to call immediately after
+/// attach / init / unlock succeeds: RLN holds its own `Arc` clone.
 #[unsafe(no_mangle)]
 pub extern "C" fn free_native_external_signer(obj: COpaqueStruct) {
     unsafe {

@@ -7,21 +7,17 @@ build = "build.rs"
 publish = false
 
 [lib]
-# `staticlib` is what mobile + napi consumers ultimately link against
-# (`librlncffi.a`). `rlib` is what Rust-side consumers like the napi-rs
-# crate in `rgb-lightning-node-nodejs` use to call our wrappers without
-# duplicating the extern-"C" surface declaration on their side.
+# staticlib: mobile + napi link against librlncffi.a. rlib: Rust consumers
+# (e.g. the napi-rs binding) call wrappers without redeclaring the extern "C".
 crate-type = ["staticlib", "rlib"]
 name = "rlncffi"
 
 [dependencies]
 rgb-lightning-node = { path = "../..", features = ["uniffi", "vls"] }
-# Direct deps on `lightning` and `lightning-invoice` so we can construct the
-# typed wrappers (`PaymentHash`, `ChannelId`, `Bolt11Invoice`) by their real
-# crate paths — `rgb_lightning_node::PaymentHash` etc. are type aliases and
-# Rust 2021 doesn't allow tuple-struct construction through an alias.
-# Resolved through the `[patch.crates-io]` block below so they unify with
-# the parent crate's pin onto Roman's rust-lightning fork.
+# Direct deps so we can construct typed wrappers by their real crate paths —
+# `rgb_lightning_node::PaymentHash` etc. are aliases and Rust 2021 doesn't
+# allow tuple-struct construction through an alias. Unified with the parent
+# via `[patch.crates-io]` below.
 lightning = { version = "0.2.0" }
 lightning-invoice = { version = "0.34.0", features = ["std"] }
 serde = { version = "1.0", features = ["derive"] }
@@ -35,21 +31,14 @@ cbindgen = "0.29.0"
 [features]
 default = []
 
-# Empty workspace declaration: this sub-crate is intentionally its own
-# Cargo workspace, separate from the parent `rgb-lightning-node` package
-# (which depends on `rust-lightning` via path; that submodule is its own
-# workspace with its own `[workspace.lints]`). The committed Cargo.lock
-# ensures `rgb-lib` resolves to the same revision the parent crate uses.
+# Own workspace so the parent crate's rust-lightning path-submodule workspace
+# isn't pulled in. The committed Cargo.lock locks `rgb-lib` to the same
+# revision the parent uses.
 [workspace]
 
-# Mirror the parent crate's `[patch.crates-io]` block so registry crates
-# resolve to the same revision the parent is pinned against. The parent
-# now patches all `lightning*` crates to Roman's
-# `rmn-boiko/rust-lightning.git#feat/external-signer-compatibility`
-# (instead of the in-tree submodule), and adds VLS-side rgb-compatibility
-# patches that the external-signer flow needs. Keeping these in lock-step
-# avoids "two copies of `lightning`" trait-bound errors when building
-# the parent crate from inside this c-ffi workspace.
+# Mirror the parent's [patch.crates-io] so we don't end up with two copies of
+# `lightning` (which fails with trait-bound errors). Keep in lock-step with
+# the parent's pins.
 [patch.crates-io]
 lightning = { git = "https://github.com/rmn-boiko/rust-lightning.git", branch = "feat/external-signer-compatibility" }
 lightning-background-processor = { git = "https://github.com/rmn-boiko/rust-lightning.git", branch = "feat/external-signer-compatibility" }

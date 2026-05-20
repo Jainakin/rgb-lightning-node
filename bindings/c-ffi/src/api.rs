@@ -17,7 +17,7 @@ use crate::utils::{convert_optional_string, ptr_to_string, require_handle, requi
 use crate::COpaqueStruct;
 
 // ---------------------------------------------------------------------------
-// Local string-parse helpers (mirror json_types but available in this module)
+// String-parse helpers
 // ---------------------------------------------------------------------------
 
 fn parse_bolt11(s: &str) -> Result<rln::Bolt11Invoice, Error> {
@@ -620,19 +620,11 @@ pub(crate) fn sdk_global_shutdown() -> Result<String, Error> {
 // External-signer surface
 // ---------------------------------------------------------------------------
 //
-// Two flavours are supported:
-//
-//   1. Native signer (`NativeExternalSigner`) — RLN owns an in-process VLS
-//      signer seeded from a host-supplied 32-byte seed. Suits the WDK shape:
-//      the secret manager hands us the seed once at unlock-time and RLN
-//      derives keys without persisting the seed.
-//
-//   2. Foreign-implemented signer (host passes bootstrap dict only) — kept
-//      for parity with the UniFFI surface. The actual `ExternalSignerHost`
-//      callback isn't exposed through this C FFI yet (would require a
-//      function-pointer transport for VLS messages); calling
-//      `sdk_node_unlock_with_attached_external_signer` without first attaching
-//      one through some other path will fail.
+// Native signer: RLN owns an in-process VLS signer seeded from a host-supplied
+// 32-byte seed. Foreign-implemented signer (bootstrap-only) is exposed for
+// UniFFI parity, but the callback transport for VLS messages is not yet wired
+// through this C FFI — `unlock_with_attached_external_signer` will fail unless
+// the host attaches a signer through another path first.
 
 pub(crate) fn native_external_signer_new(
     seed_hex: *const c_char,
