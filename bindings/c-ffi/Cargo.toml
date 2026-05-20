@@ -16,8 +16,10 @@ rgb-lightning-node = { path = "../..", features = ["uniffi", "vls"] }
 # typed wrappers (`PaymentHash`, `ChannelId`, `Bolt11Invoice`) by their real
 # crate paths — `rgb_lightning_node::PaymentHash` etc. are type aliases and
 # Rust 2021 doesn't allow tuple-struct construction through an alias.
-lightning = { version = "0.2.0", path = "../../rust-lightning/lightning" }
-lightning-invoice = { version = "0.34.0", path = "../../rust-lightning/lightning-invoice", features = ["std"] }
+# Resolved through the `[patch.crates-io]` block below so they unify with
+# the parent crate's pin onto Roman's rust-lightning fork.
+lightning = { version = "0.2.0" }
+lightning-invoice = { version = "0.34.0", features = ["std"] }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 thiserror = "2.0"
@@ -36,13 +38,22 @@ default = []
 # ensures `rgb-lib` resolves to the same revision the parent crate uses.
 [workspace]
 
-# Mirror the parent crate's `[patch.crates-io]` so registry crates that
-# depend on `lightning` / `lightning-background-processor` (e.g.
-# `lightning-net-tokio`, `lightning-block-sync`) are unified onto the
-# pinned `rust-lightning` submodule. Without this, the type identities
-# of `lightning::*` items from the path version and the registry version
-# diverge and trigger trait-bound errors when building the parent crate
-# from inside this workspace.
+# Mirror the parent crate's `[patch.crates-io]` block so registry crates
+# resolve to the same revision the parent is pinned against. The parent
+# now patches all `lightning*` crates to Roman's
+# `rmn-boiko/rust-lightning.git#feat/external-signer-compatibility`
+# (instead of the in-tree submodule), and adds VLS-side rgb-compatibility
+# patches that the external-signer flow needs. Keeping these in lock-step
+# avoids "two copies of `lightning`" trait-bound errors when building
+# the parent crate from inside this c-ffi workspace.
 [patch.crates-io]
-lightning = { path = "../../rust-lightning/lightning" }
-lightning-background-processor = { path = "../../rust-lightning/lightning-background-processor" }
+lightning = { git = "https://github.com/rmn-boiko/rust-lightning.git", branch = "feat/external-signer-compatibility" }
+lightning-background-processor = { git = "https://github.com/rmn-boiko/rust-lightning.git", branch = "feat/external-signer-compatibility" }
+lightning-block-sync = { git = "https://github.com/rmn-boiko/rust-lightning.git", branch = "feat/external-signer-compatibility" }
+lightning-dns-resolver = { git = "https://github.com/rmn-boiko/rust-lightning.git", branch = "feat/external-signer-compatibility" }
+lightning-invoice = { git = "https://github.com/rmn-boiko/rust-lightning.git", branch = "feat/external-signer-compatibility" }
+lightning-net-tokio = { git = "https://github.com/rmn-boiko/rust-lightning.git", branch = "feat/external-signer-compatibility" }
+lightning-persister = { git = "https://github.com/rmn-boiko/rust-lightning.git", branch = "feat/external-signer-compatibility" }
+lightning-rapid-gossip-sync = { git = "https://github.com/rmn-boiko/rust-lightning.git", branch = "feat/external-signer-compatibility" }
+vls-core = { git = "https://github.com/rmn-boiko/vls-core.git", branch = "feat/rgb-compatibility" }
+vls-protocol-signer = { git = "https://github.com/rmn-boiko/vls-protocol-signer.git", branch = "feat/rgb-compatibility" }
