@@ -3225,13 +3225,58 @@ pub(crate) fn derive_vss_identity(
 pub(crate) fn derive_vss_identity_from_bootstrap(
     bootstrap: &crate::signer::types::BootstrapData,
 ) -> Result<VssIdentity, APIError> {
+    derive_vss_identity_from_public_material(
+        &bootstrap.identity.node_id,
+        &bootstrap.identity.account_xpub_vanilla,
+        &bootstrap.identity.account_xpub_colored,
+        &bootstrap.identity.master_fingerprint,
+        &bootstrap.protocol_version,
+    )
+}
+
+/// Derive the same bootstrap VSS identity from the persisted `key_source.json`
+/// instead of a live [`BootstrapData`].
+///
+/// `vss_clear_fence` runs on a *locked* node, so it has no unlock request and
+/// therefore no in-memory bootstrap. But the bootstrap identity is mirrored
+/// verbatim into the key-source file at external-signer init
+/// ([`crate::signer::KeySourceFile::from_bootstrap`]), so this reconstructs a
+/// VSS identity byte-identical to the one [`derive_vss_identity_from_bootstrap`]
+/// produces at unlock — which is exactly what the single-writer fence needs so
+/// the clear targets the same store id the running node acquired. The
+/// `key_source_matches_bootstrap_identity` test pins that equivalence.
+#[cfg(feature = "vss")]
+pub(crate) fn derive_vss_identity_from_key_source(
+    key_source: &crate::signer::KeySourceFile,
+) -> Result<VssIdentity, APIError> {
+    derive_vss_identity_from_public_material(
+        &key_source.node_id,
+        &key_source.account_xpub_vanilla,
+        &key_source.account_xpub_colored,
+        &key_source.master_fingerprint,
+        &key_source.protocol_version,
+    )
+}
+
+/// Shared core for the external-signer VSS identity. Hashing the same fields in
+/// the same order is what guarantees the unlock-time (bootstrap) and
+/// fence-clear-time (key-source) derivations agree; keep both callers routed
+/// through here rather than duplicating the seed layout.
+#[cfg(feature = "vss")]
+fn derive_vss_identity_from_public_material(
+    node_id: &str,
+    account_xpub_vanilla: &str,
+    account_xpub_colored: &str,
+    master_fingerprint: &str,
+    protocol_version: &str,
+) -> Result<VssIdentity, APIError> {
     let mut seed_material = Vec::new();
     seed_material.extend_from_slice(b"rln-vss-identity-v1");
-    seed_material.extend_from_slice(bootstrap.identity.node_id.as_bytes());
-    seed_material.extend_from_slice(bootstrap.identity.account_xpub_vanilla.as_bytes());
-    seed_material.extend_from_slice(bootstrap.identity.account_xpub_colored.as_bytes());
-    seed_material.extend_from_slice(bootstrap.identity.master_fingerprint.as_bytes());
-    seed_material.extend_from_slice(bootstrap.protocol_version.as_bytes());
+    seed_material.extend_from_slice(node_id.as_bytes());
+    seed_material.extend_from_slice(account_xpub_vanilla.as_bytes());
+    seed_material.extend_from_slice(account_xpub_colored.as_bytes());
+    seed_material.extend_from_slice(master_fingerprint.as_bytes());
+    seed_material.extend_from_slice(protocol_version.as_bytes());
     let seed = <sha256::Hash as BitcoinHash>::hash(&seed_material).to_byte_array();
 
     let secp = Secp256k1_30::new();
@@ -3289,6 +3334,22 @@ mod vss_bootstrap_identity_tests {
         let vss = derive_vss_identity_from_bootstrap(&b).expect("derive");
         let apay = crate::signer::types::derive_async_payments_compat_seed_from_bootstrap(&b);
         assert_ne!(vss.signing_key.secret_bytes(), apay);
+    }
+
+    #[test]
+    fn key_source_matches_bootstrap_identity() {
+        // The fence-clear path derives the VSS identity from the persisted
+        // key_source.json, while unlock derives it from the live bootstrap.
+        // Both must resolve to the same store id + signing key, otherwise
+        // `vss_clear_fence` would delete the wrong fence and the running
+        // node's store would stay locked.
+        let b = fake_bootstrap(&"02".repeat(33));
+        let key_source = crate::signer::KeySourceFile::from_bootstrap(&b);
+        let from_bootstrap = derive_vss_identity_from_bootstrap(&b).expect("derive bootstrap");
+        let from_key_source =
+            derive_vss_identity_from_key_source(&key_source).expect("derive key source");
+        assert_eq!(from_bootstrap.pubkey_hex, from_key_source.pubkey_hex);
+        assert_eq!(from_bootstrap.signing_key, from_key_source.signing_key);
     }
 }
 
