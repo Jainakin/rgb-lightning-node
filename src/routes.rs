@@ -80,14 +80,14 @@ use crate::core_types::async_order::{
     AsyncOrderNewRequest, AsyncOrderNewResponse, AsyncOrderOutboundInvoiceRequest,
     AsyncOrderOutboundInvoiceResponse,
 };
-#[cfg(feature = "vss")]
-use crate::ldk::{derive_vss_identity, derive_vss_identity_from_key_source};
-#[cfg(feature = "vss")]
-use crate::signer::read_key_source_file;
 use crate::ldk::{
     clear_rgb_payment_pending, start_ldk, stop_ldk, LdkBackgroundServices,
     VirtualChannelSessionStatus,
 };
+#[cfg(feature = "vss")]
+use crate::ldk::{derive_vss_identity, derive_vss_identity_from_key_source};
+#[cfg(feature = "vss")]
+use crate::signer::read_key_source_file;
 use crate::swap::{SwapData, SwapInfo, SwapString};
 use crate::utils::{
     check_already_initialized, check_channel_id, check_password_strength, check_password_validity,

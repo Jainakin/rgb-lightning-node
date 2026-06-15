@@ -12,12 +12,12 @@ use crate::core_types::async_order::{
 };
 use crate::core_types::{FEE_RATE, MIN_CHANNEL_CONFIRMATIONS};
 use crate::error::APIError;
-#[cfg(feature = "vss")]
-use crate::ldk::{derive_vss_identity, derive_vss_identity_from_key_source};
 use crate::ldk::{
     clear_rgb_payment_pending, start_ldk, write_rgb_payment_info_file, InvoiceType, PaymentInfo,
     VirtualChannelSessionStatus,
 };
+#[cfg(feature = "vss")]
+use crate::ldk::{derive_vss_identity, derive_vss_identity_from_key_source};
 use crate::rgb::{check_rgb_proxy_endpoint, get_rgb_channel_info_optional};
 use crate::signer::{
     read_key_source_file, validate_bootstrap_payload, validate_key_source_matches_bootstrap,

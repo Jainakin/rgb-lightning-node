@@ -3281,7 +3281,9 @@ fn derive_vss_identity_from_public_material(
 
     let secp = Secp256k1_30::new();
     let signing_key = rgb_lib::bitcoin::secp256k1::SecretKey::from_slice(&seed).map_err(|e| {
-        APIError::FailedVssInit(format!("VSS identity: invalid derived key from bootstrap: {e}"))
+        APIError::FailedVssInit(format!(
+            "VSS identity: invalid derived key from bootstrap: {e}"
+        ))
     })?;
     let pubkey_hex = hex_str(&signing_key.public_key(&secp).serialize());
     Ok(VssIdentity {
@@ -3319,10 +3321,10 @@ mod vss_bootstrap_identity_tests {
 
     #[test]
     fn differs_for_different_bootstrap() {
-        let a = derive_vss_identity_from_bootstrap(&fake_bootstrap(&"02".repeat(33)))
-            .expect("derive");
-        let b = derive_vss_identity_from_bootstrap(&fake_bootstrap(&"03".repeat(33)))
-            .expect("derive");
+        let a =
+            derive_vss_identity_from_bootstrap(&fake_bootstrap(&"02".repeat(33))).expect("derive");
+        let b =
+            derive_vss_identity_from_bootstrap(&fake_bootstrap(&"03".repeat(33))).expect("derive");
         assert_ne!(a.pubkey_hex, b.pubkey_hex);
     }
 
@@ -3554,9 +3556,7 @@ pub(crate) async fn start_ldk(
         // [[derive_vss_identity_from_bootstrap]]. Either path yields a VSS
         // identity stable across restarts for the same wallet.
         match internal_mnemonic.as_ref() {
-            Some(mnemonic) => {
-                Some(derive_vss_identity(mnemonic, static_state.network.into())?)
-            }
+            Some(mnemonic) => Some(derive_vss_identity(mnemonic, static_state.network.into())?),
             None => {
                 let bootstrap = external_bootstrap.as_ref().ok_or_else(|| {
                     APIError::FailedVssInit(
