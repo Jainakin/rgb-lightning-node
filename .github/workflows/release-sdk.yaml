@@ -51,7 +51,7 @@ jobs:
           echo "publish_to_npm=${PUBLISH_TO_NPM}" >> "$GITHUB_OUTPUT"
 
   wasm-sdk:
-    name: Build WASM SDK and publish npm
+    name: Build WASM SDK package
     runs-on: ubuntu-latest
     timeout-minutes: 45
     needs: resolve-version
@@ -71,18 +71,12 @@ jobs:
         run: rustup target add wasm32-unknown-unknown
 
       - name: Install wasm-pack
-        run: cargo install wasm-pack@0.14.0
+        run: cargo install wasm-pack --version 0.14.0 --locked
 
       - name: Build WASM package
         run: |
           cd bindings/wasm-sdk
           wasm-pack build --target web --release --out-dir pkg
-
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: "20"
-          registry-url: "https://registry.npmjs.org"
 
       - name: Set WASM package version and metadata
         working-directory: bindings/wasm-sdk/pkg
@@ -101,13 +95,6 @@ jobs:
 
       - name: Copy README into package
         run: cp bindings/wasm-sdk/README.md bindings/wasm-sdk/pkg/README.md
-
-      - name: Publish WASM package to npm
-        if: needs.resolve-version.outputs.publish_to_npm == 'true'
-        working-directory: bindings/wasm-sdk/pkg
-        run: npm publish --access public
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
 
       - name: Package WASM release artifact
         run: |
@@ -336,10 +323,51 @@ jobs:
           if-no-files-found: error
           path: release/rgb-lightning-node-swift-${{ needs.resolve-version.outputs.version }}.zip
 
+  npm-wasm:
+    name: Publish WASM package to npm
+    runs-on: ubuntu-latest
+    needs: [resolve-version, kotlin-android, swift-ios, wasm-sdk]
+    steps:
+      - name: Download WASM artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: wasm-sdk-release
+          path: release-assets
+
+      - name: Extract WASM package
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          tarballs=(release-assets/*.tar.gz)
+          if [ "${#tarballs[@]}" -ne 1 ]; then
+            echo "Expected exactly one tarball in release-assets, got ${#tarballs[@]}"
+            ls -la release-assets
+            exit 1
+          fi
+          tar -xzf "${tarballs[0]}" -C release-assets
+
+      - name: Setup Node.js
+        if: needs.resolve-version.outputs.publish_to_npm == 'true'
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          registry-url: "https://registry.npmjs.org"
+
+      - name: Publish WASM package to npm
+        if: needs.resolve-version.outputs.publish_to_npm == 'true'
+        working-directory: release-assets/pkg
+        run: npm publish --access public
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+      - name: Skip npm publish
+        if: needs.resolve-version.outputs.publish_to_npm != 'true'
+        run: echo "publish_to_npm=false, skipping npm publish"
+
   github-release:
     name: Publish GitHub release
     runs-on: ubuntu-latest
-    needs: [resolve-version, kotlin-android, swift-ios, wasm-sdk]
+    needs: [resolve-version, kotlin-android, swift-ios, wasm-sdk, npm-wasm]
     steps:
       - name: Download release artifacts
         uses: actions/download-artifact@v4
