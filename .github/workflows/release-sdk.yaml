@@ -41,10 +41,15 @@ jobs:
         id: resolve
         run: |
           RAW_VERSION="${{ inputs.version }}"
-          VERSION="${RAW_VERSION#v}"
+          VERSION="$(echo "${RAW_VERSION}" | sed -E 's/^[[:space:]]*([Ss][Dd][Kk][[:space:]]+)?v?//; s/[[:space:]]+$//')"
+          if [[ -z "${VERSION}" ]]; then
+            echo "Resolved version is empty. Provided input: '${RAW_VERSION}'"
+            exit 1
+          fi
           TAG="v${VERSION}"
           PUBLISH_TO_MAVEN="${{ inputs.publish_to_maven }}"
           PUBLISH_TO_NPM="${{ inputs.publish_to_npm }}"
+          echo "Resolved version input '${RAW_VERSION}' -> '${VERSION}'"
           echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
           echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
           echo "publish_to_maven=${PUBLISH_TO_MAVEN}" >> "$GITHUB_OUTPUT"
