@@ -93,6 +93,11 @@ jobs:
             pkg.name = '@utexo/rln-wasm';
             pkg.version = process.env.VERSION;
             pkg.repository = { type: 'git', url: 'https://github.com/UTEXO-Protocol/rgb-lightning-node.git' };
+            if (Array.isArray(pkg.files)) {
+              if (!pkg.files.includes('snippets/') && !pkg.files.includes('snippets/**')) {
+                pkg.files.push('snippets/');
+              }
+            }
             fs.writeFileSync('package.json', JSON.stringify(pkg, null, 2) + '\n');
           "
         env:
@@ -357,6 +362,23 @@ jobs:
         with:
           node-version: "20"
           registry-url: "https://registry.npmjs.org"
+
+      - name: Verify npm tarball includes snippets
+        if: needs.resolve-version.outputs.publish_to_npm == 'true'
+        working-directory: release-assets/pkg
+        run: |
+          npm pack --dry-run --json > npm-pack.json
+          node -e "
+            const fs = require('fs');
+            const data = JSON.parse(fs.readFileSync('npm-pack.json', 'utf8'));
+            const files = (data[0] && data[0].files || []).map((f) => f.path);
+            if (!files.some((p) => p.startsWith('snippets/'))) {
+              console.error('npm pack is missing snippets/.');
+              console.error('Packed files:', files.join('\n'));
+              process.exit(1);
+            }
+            console.log('snippets/ is included in npm pack output');
+          "
 
       - name: Publish WASM package to npm
         if: needs.resolve-version.outputs.publish_to_npm == 'true'
