@@ -3459,6 +3459,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "pem"
+version = "3.0.6"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1d30c53c26bc5b31a98cd02d20f25a7c8567146caf63ed593a9d87b2775291be"
+dependencies = [
+ "base64 0.22.1",
+ "serde_core",
+]
+
+[[package]]
 name = "pem-rfc7468"
 version = "0.7.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3947,6 +3957,37 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "63b8176103e19a2643978565ca18b50549f6101881c443590420e4dc998a3c69"
 
 [[package]]
+name = "rcgen"
+version = "0.13.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "75e669e5202259b5314d1ea5397316ad400819437857b90861765f24c4cf80a2"
+dependencies = [
+ "pem",
+ "ring",
+ "rustls-pki-types",
+ "time",
+ "yasna",
+]
+
+[[package]]
+name = "redb"
+version = "1.5.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "17a0b35b8077c954324cc3504bea8d35e27a2f5d07c0ba41052a35d92f020f84"
+dependencies = [
+ "libc",
+]
+
+[[package]]
+name = "redb"
+version = "2.6.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8eca1e9d98d5a7e9002d0013e18d5a9b000aee942eb134883a82f06ebffb6c01"
+dependencies = [
+ "libc",
+]
+
+[[package]]
 name = "redox_syscall"
 version = "0.5.18"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4285,6 +4326,7 @@ dependencies = [
  "hex-conservative 0.3.2",
  "http",
  "lazy_static",
+ "libc",
  "lightning 0.2.2",
  "lightning-background-processor",
  "lightning-block-sync",
@@ -4299,12 +4341,14 @@ dependencies = [
  "once_cell",
  "prost 0.13.5",
  "rand 0.8.6",
+ "rcgen",
  "regex",
  "reqwest 0.12.28",
  "rgb-lib",
  "rgb-psbt-utils",
  "rln-migration",
  "rustls 0.23.41",
+ "rustls-pemfile",
  "scrypt",
  "sea-orm",
  "serde",
@@ -4315,6 +4359,7 @@ dependencies = [
  "thiserror 2.0.18",
  "time",
  "tokio",
+ "tokio-rustls",
  "tokio-util",
  "tower-http",
  "tracing",
@@ -4325,6 +4370,7 @@ dependencies = [
  "uniffi",
  "uuid",
  "vls-core",
+ "vls-persist",
  "vls-protocol",
  "vls-protocol-client",
  "vls-protocol-signer",
@@ -4580,6 +4626,15 @@ dependencies = [
  "rustls-pki-types",
  "schannel",
  "security-framework",
+]
+
+[[package]]
+name = "rustls-pemfile"
+version = "2.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "dce314e5fee3f39953d46bb63bb8a46d40c2f8fb7cc5a3b6cab2bde9721d6e50"
+dependencies = [
+ "rustls-pki-types",
 ]
 
 [[package]]
@@ -5220,7 +5275,7 @@ dependencies = [
 [[package]]
 name = "signer-external"
 version = "0.1.0-alpha"
-source = "git+https://github.com/UTEXO-Protocol/rln-external-signer.git?branch=main#dc15b6c8a1dea92c931c37de9968b57cf663e597"
+source = "git+https://github.com/UTEXO-Protocol/rln-external-signer.git?branch=main#0fb005ec4b927ddbe13e1646d247b5bb11e8ffed"
 dependencies = [
  "base64 0.22.1",
  "bitcoin 0.32.101",
@@ -6373,7 +6428,9 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "bf80a72845275afea99e7f2b434723d3bc7e38470fcd1c7ed39a599c73319a53"
 dependencies = [
  "getrandom 0.4.3",
+ "js-sys",
  "serde_core",
+ "wasm-bindgen",
 ]
 
 [[package]]
@@ -6432,6 +6489,24 @@ dependencies = [
  "txoo",
  "vls-common",
  "vls-policy-derive",
+]
+
+[[package]]
+name = "vls-persist"
+version = "0.14.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "84526aaf721d6086c433aa838b9cb668740e8784d29d8b6a273745ef80dae8f6"
+dependencies = [
+ "hex",
+ "log",
+ "redb 1.5.2",
+ "redb 2.6.3",
+ "serde",
+ "serde_json",
+ "serde_with",
+ "tracing",
+ "uuid",
+ "vls-core",
 ]
 
 [[package]]
@@ -7075,6 +7150,15 @@ name = "yansi"
 version = "1.0.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "cfe53a6657fd280eaa890a3bc59152892ffa3e30101319d168b781ed6529b049"
+
+[[package]]
+name = "yasna"
+version = "0.5.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e17bb3549cc1321ae1296b9cdc2698e2b6cb1992adfa19a8c72e5b7a738f44cd"
+dependencies = [
+ "time",
+]
 
 [[package]]
 name = "yoke"

@@ -1604,6 +1604,82 @@ async fn handle_open_chan_fail(channel_id: &ChannelId, unlocked_state: Arc<Unloc
         .remove(PENDING_FUNDING_NAMESPACE, "", &channel_id_hex, false);
 }
 
+/// Undo what a standard channel's `FundingGenerationReady` preparation staged, so a failure
+/// between preparation and a fully-signed funding tx (e.g. a remote external signer briefly
+/// unreachable, or returning a malformed reply) can replay the event without leaking locked funds:
+/// for a colored channel fail the pending RGB batch transfer (releasing the reserved allocation),
+/// for a vanilla channel abort the pending vanilla tx (releasing the locked UTXOs). This runs
+/// *before* the `PENDING_FUNDING_NAMESPACE` mapping exists, so `handle_open_chan_fail` could not do
+/// the vanilla cleanup later — the staged tx would be unabortable. Best-effort: errors are logged
+/// and the caller still replays the event.
+async fn abort_staged_standard_funding(
+    unlocked_state: Arc<UnlockedAppState>,
+    temporary_channel_id: &ChannelId,
+    unsigned_psbt: &str,
+    is_colored: bool,
+) {
+    if is_colored {
+        if let Some(mut rgb_info) = get_rgb_channel_info_optional(
+            temporary_channel_id,
+            true,
+            unlocked_state.kv_store.as_ref(),
+        ) {
+            if let Some(batch_transfer_idx) = rgb_info.batch_transfer_idx {
+                let unlocked_state_copy = unlocked_state.clone();
+                let failed = tokio::task::spawn_blocking(move || {
+                    unlocked_state_copy.rgb_fail_transfers(Some(batch_transfer_idx), false, true)
+                })
+                .await
+                .unwrap();
+                match failed {
+                    Ok(_) => {
+                        // Clear the recorded idx: the transfer is already failed, and the replayed
+                        // event will stage a fresh transfer and record its own idx.
+                        rgb_info.batch_transfer_idx = None;
+                        unlocked_state.kv_store.write_rgb_channel_info(
+                            &temporary_channel_id.0.as_hex().to_string(),
+                            &rgb_info,
+                            true,
+                        );
+                    }
+                    Err(e) => tracing::error!(
+                        "Error failing staged RGB transfer batch_transfer_idx={batch_transfer_idx} \
+                         for channel {temporary_channel_id}: {e:?}"
+                    ),
+                }
+            }
+        }
+    } else {
+        // The txid of the pending vanilla tx: witness data is excluded from the txid, so the
+        // unsigned PSBT's tx computes the same txid rgb-lib recorded for the pending tx.
+        match Psbt::from_str(unsigned_psbt) {
+            Ok(psbt) => {
+                let txid = psbt.unsigned_tx.compute_txid().to_string();
+                let unlocked_state_copy = unlocked_state.clone();
+                let txid_copy = txid.clone();
+                let result = tokio::task::spawn_blocking(move || {
+                    unlocked_state_copy.rgb_abort_pending_vanilla_tx(txid_copy)
+                })
+                .await
+                .unwrap();
+                match result {
+                    Ok(()) => tracing::info!(
+                        "Aborted staged vanilla funding tx {txid} for channel {temporary_channel_id}"
+                    ),
+                    Err(e) => tracing::error!(
+                        "Error aborting staged vanilla funding tx {txid} for channel \
+                         {temporary_channel_id}: {e:?}"
+                    ),
+                }
+            }
+            Err(e) => tracing::error!(
+                "cannot parse staged funding PSBT while cleaning up channel \
+                 {temporary_channel_id}: {e}"
+            ),
+        }
+    }
+}
+
 async fn handle_ldk_events(
     event: Event,
     unlocked_state: Arc<UnlockedAppState>,
@@ -1994,10 +2070,38 @@ async fn handle_ldk_events(
                 (unsigned_psbt, None)
             };
 
-            let signed_psbt = unlocked_state.rgb_sign_psbt(unsigned_psbt).unwrap();
-            let psbt = Psbt::from_str(&signed_psbt).unwrap();
-
-            let funding_tx = psbt.clone().extract_tx().unwrap();
+            // With a remote external signer this call crosses the network: a transient transport
+            // failure or a malformed reply must not panic the event task. Take the same
+            // cooperative path as virtual funding — undo what the preparation staged (the pending
+            // vanilla tx / the RGB batch transfer, which would otherwise be unabortable since the
+            // PENDING_FUNDING mapping is only written after signing), then replay the event to
+            // retry the preparation from scratch.
+            let signing_outcome = unlocked_state
+                .rgb_sign_psbt(unsigned_psbt.clone())
+                .map_err(|e| format!("signing failed: {e}"))
+                .and_then(|signed| {
+                    Psbt::from_str(&signed).map_err(|e| format!("signed PSBT does not parse: {e}"))
+                })
+                .and_then(|psbt| {
+                    psbt.clone()
+                        .extract_tx()
+                        .map(|tx| (psbt, tx))
+                        .map_err(|e| format!("signed PSBT does not extract: {e}"))
+                });
+            let (psbt, funding_tx) = match signing_outcome {
+                Ok(result) => result,
+                Err(e) => {
+                    tracing::error!("cannot sign channel funding transaction: {e}");
+                    abort_staged_standard_funding(
+                        unlocked_state.clone(),
+                        &temporary_channel_id,
+                        &unsigned_psbt,
+                        asset_id.is_some(),
+                    )
+                    .await;
+                    return Err(ReplayEvent());
+                }
+            };
             let funding_txid = funding_tx.compute_txid();
             let funding_txid_str = funding_txid.to_string();
             tracing::info!("Funding TXID: {funding_txid_str}");
@@ -3670,9 +3774,16 @@ pub(crate) async fn start_ldk(
         external_bootstrap,
         external_signer,
         external_node_id,
+        external_signer_link_watch,
     ) = match key_source {
-        NodeKeySource::InternalMnemonic(mnemonic) => (Some(mnemonic), false, None, None, None),
+        NodeKeySource::InternalMnemonic(mnemonic) => {
+            (Some(mnemonic), false, None, None, None, None)
+        }
         NodeKeySource::External(external) => {
+            // Grab this before the transport is wrapped into `ExternalSigner` below: `Some` only for
+            // transports that can genuinely go unreachable and recover (the remote-signer daemon
+            // link), `None` for e.g. an in-process uniffi signer that can never be unreachable.
+            let link_watch = external.signer_attachment.transport.link_watch();
             let signer = ExternalSigner::from_attachment(&external.signer_attachment)
                 .map_err(|e| APIError::ExternalSignerProtocolError(e.to_string()))?;
             let bootstrap = external.signer_attachment.bootstrap.clone();
@@ -3699,6 +3810,7 @@ pub(crate) async fn start_ldk(
                 Some(bootstrap),
                 Some(Arc::new(signer)),
                 external_node_id,
+                link_watch,
             )
         }
     };
@@ -5050,6 +5162,72 @@ pub(crate) async fn start_ldk(
             }
         }
     });
+
+    // Remote external signer force-close resilience. When the signer daemon is briefly unreachable, a
+    // channel signing call returns LDK's async-unavailable sentinel (`Err(())`) and the operation parks
+    // instead of failing the channel. While an outage is outstanding, periodically drive
+    // `signer_unblocked` so parked operations retry — which is what makes the transport actually
+    // attempt to reconnect, since nothing else calls it while everything is parked.
+    //
+    // Only spawned when the transport can genuinely go unreachable and recover
+    // (`external_signer_link_watch` is `Some` only for the remote-signer daemon link — an in-process
+    // uniffi signer can never be unreachable), and only ticking while the link is actually down:
+    // `signer_unblocked(None)` is NOT a cheap no-op — it walks every peer's channel map under
+    // `total_consistency_lock` and unconditionally forces a `ChannelManager` re-persist — so a
+    // healthy node must not pay it every few seconds forever.
+    //
+    // The link watch is state-based (see `SignerLinkWatch`): every wake-up re-checks `is_connected`
+    // rather than trusting the wake-up itself, so buffered/spurious signals only ever cost one extra
+    // `signer_unblocked` pass, never a stuck loop.
+    if let Some(link) = external_signer_link_watch {
+        let su_channel_manager = Arc::clone(&channel_manager);
+        let su_chain_monitor = Arc::clone(&chain_monitor);
+        let su_stop = Arc::clone(&stop_processing);
+        tokio::spawn(async move {
+            loop {
+                // Healthy: idle until the link reports a change (with a coarse timer only to notice
+                // node shutdown — it drives no signer work).
+                let link_event = tokio::select! {
+                    _ = link.changed() => true,
+                    _ = tokio::time::sleep(Duration::from_secs(30)) => false,
+                };
+                if su_stop.load(Ordering::Acquire) {
+                    return;
+                }
+                if link_event && link.is_connected() {
+                    // The link dropped and recovered while we slept: one pass covers anything that
+                    // parked in between.
+                    su_chain_monitor.signer_unblocked(None);
+                    su_channel_manager.signer_unblocked(None);
+                    continue;
+                }
+                if link.is_connected() {
+                    continue;
+                }
+                // Outage: drive retries until the transport reports the link is back, then one final
+                // pass for anything that parked right around the transition. Reacts immediately to
+                // the reconnect signal instead of waiting out the tick interval; the interval is the
+                // backstop that drives the reconnect attempts in the first place (its first tick
+                // completes immediately).
+                let mut interval = tokio::time::interval(Duration::from_secs(5));
+                interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+                loop {
+                    tokio::select! {
+                        _ = interval.tick() => {}
+                        _ = link.changed() => {}
+                    }
+                    if su_stop.load(Ordering::Acquire) {
+                        return;
+                    }
+                    su_chain_monitor.signer_unblocked(None);
+                    su_channel_manager.signer_unblocked(None);
+                    if link.is_connected() {
+                        break;
+                    }
+                }
+            }
+        });
+    }
 
     // Regularly broadcast our node_announcement. This is only required (or possible) if we have
     // some public channels.
