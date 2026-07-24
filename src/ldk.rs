@@ -56,14 +56,15 @@ use lightning::util::hash_tables::{new_hash_map, HashMap as LdkHashMap};
 #[cfg(feature = "vss")]
 use lightning::util::native_async::FutureSpawner;
 #[cfg(not(feature = "vss"))]
+use lightning::util::persist::KVStoreSyncWrapper;
+#[cfg(not(feature = "vss"))]
 use lightning::util::persist::MonitorUpdatingPersister;
 #[cfg(feature = "vss")]
 use lightning::util::persist::MonitorUpdatingPersisterAsync;
 use lightning::util::persist::{
-    KVStoreSync, KVStoreSyncWrapper, CHANNEL_MANAGER_PERSISTENCE_KEY,
-    CHANNEL_MANAGER_PERSISTENCE_PRIMARY_NAMESPACE, CHANNEL_MANAGER_PERSISTENCE_SECONDARY_NAMESPACE,
-    OUTPUT_SWEEPER_PERSISTENCE_KEY, OUTPUT_SWEEPER_PERSISTENCE_PRIMARY_NAMESPACE,
-    OUTPUT_SWEEPER_PERSISTENCE_SECONDARY_NAMESPACE,
+    KVStoreSync, CHANNEL_MANAGER_PERSISTENCE_KEY, CHANNEL_MANAGER_PERSISTENCE_PRIMARY_NAMESPACE,
+    CHANNEL_MANAGER_PERSISTENCE_SECONDARY_NAMESPACE, OUTPUT_SWEEPER_PERSISTENCE_KEY,
+    OUTPUT_SWEEPER_PERSISTENCE_PRIMARY_NAMESPACE, OUTPUT_SWEEPER_PERSISTENCE_SECONDARY_NAMESPACE,
 };
 use lightning::util::ser::{Readable, ReadableArgs, Writeable};
 use lightning::util::sweep as ldk_sweep;
@@ -98,6 +99,8 @@ use rgb_lib::{
     Fascia, FileContent, RgbTransfer, RgbTxid, WitnessOrd,
 };
 use std::collections::HashMap;
+#[cfg(feature = "vss")]
+use std::collections::HashSet;
 use std::convert::TryInto;
 use std::fs;
 use std::hash::{DefaultHasher, Hash, Hasher};
@@ -1129,12 +1132,19 @@ pub(crate) struct RgbOutputSpender {
     proxy_endpoint: String,
 }
 
+// The sweeper store type is shared with the background processor's persister
+// (same generic in `process_events_async`).
+#[cfg(feature = "vss")]
+pub(crate) type BpKvStore = Arc<crate::async_kv_store::BpKvStoreRouter>;
+#[cfg(not(feature = "vss"))]
+pub(crate) type BpKvStore = KVStoreSyncWrapper<Arc<SyncedKvStore>>;
+
 pub(crate) type OutputSweeper = ldk_sweep::OutputSweeper<
     Arc<ChainBackend>,
     Arc<RgbLibWalletWrapper>,
     Arc<ChainBackend>,
     Arc<dyn Filter + Send + Sync>,
-    KVStoreSyncWrapper<Arc<SyncedKvStore>>,
+    BpKvStore,
     Arc<FilesystemLogger>,
     Arc<RgbOutputSpender>,
 >;
@@ -3979,11 +3989,15 @@ pub(crate) async fn start_ldk(
         None
     };
 
-    // Monitors persist remote-first through `monitor_kv_store` (async, VSS-durable
-    // before ack); ChannelManager and aux state keep the local-first `kv_store`
-    // sync facade. Both share the same local DB and (when configured) VSS store.
+    // Monitors and the channel manager persist remote-first (VSS-durable before
+    // ack); aux state keeps the local-first `kv_store` sync facade. All share
+    // the same local DB and (when configured) VSS store.
+    #[cfg(feature = "vss")]
+    let bp_local_kv_store = Arc::clone(&local_kv_store);
     #[cfg(feature = "vss")]
     let mut fence_guard: Option<crate::vss_kv_store::FenceReleaseGuard> = None;
+    #[cfg(feature = "vss")]
+    let mut vss_restored_keys: usize = 0;
     #[cfg(feature = "vss")]
     let (kv_store, monitor_kv_store) = if let (Some(ref vss_url), Some(ref identity)) =
         (&static_state.vss_url, &vss_identity)
@@ -4036,7 +4050,10 @@ pub(crate) async fn start_ldk(
         if !has_local_data {
             match synced.restore_from_vss(false) {
                 Ok(0) => tracing::info!("No VSS backup data found, starting fresh"),
-                Ok(n) => tracing::info!(keys_restored = n, "Restored node KV state from VSS"),
+                Ok(n) => {
+                    vss_restored_keys = n;
+                    tracing::info!(keys_restored = n, "Restored node KV state from VSS");
+                }
                 Err(e) => {
                     if static_state.vss_allow_empty_restore {
                         tracing::warn!(
@@ -4063,6 +4080,15 @@ pub(crate) async fn start_ldk(
 
     #[cfg(not(feature = "vss"))]
     let kv_store = Arc::new(SyncedKvStore::local_only(local_kv_store));
+
+    #[cfg(feature = "vss")]
+    let bp_kv_store: BpKvStore = Arc::new(crate::async_kv_store::BpKvStoreRouter::new(
+        Arc::clone(&monitor_kv_store),
+        bp_local_kv_store,
+        Arc::clone(&kv_store),
+    ));
+    #[cfg(not(feature = "vss"))]
+    let bp_kv_store: BpKvStore = KVStoreSyncWrapper(Arc::clone(&kv_store));
 
     // Sync config from database to KVStore
     sync_config_to_kvstore(&static_state.db(), kv_store.as_ref())?;
@@ -4466,6 +4492,53 @@ pub(crate) async fn start_ldk(
         }
     };
 
+    // A restored manager lagging a still-open monitor (it reports
+    // `Balance::ClaimableOnChannelClose`) would force-close on load; refuse
+    // before anything watches monitors or broadcasts.
+    #[cfg(feature = "vss")]
+    if vss_restored_keys > 0 {
+        use lightning::chain::channelmonitor::Balance;
+        let manager_channel_ids: HashSet<ChannelId> = channel_manager
+            .list_channels()
+            .iter()
+            .map(|c| c.channel_id)
+            .collect();
+        let lost_channels: Vec<String> = channelmonitors
+            .iter()
+            .filter(|(_, m)| !manager_channel_ids.contains(&m.channel_id()))
+            .filter(|(_, m)| {
+                m.get_claimable_balances()
+                    .iter()
+                    .any(|b| matches!(b, Balance::ClaimableOnChannelClose { .. }))
+            })
+            .map(|(_, m)| m.channel_id().to_string())
+            .collect();
+        if !lost_channels.is_empty() {
+            if static_state.vss_allow_empty_restore {
+                tracing::warn!(
+                    channels = ?lost_channels,
+                    "restored channel manager lags the restored monitors; proceeding due to \
+                     --vss-allow-empty-restore — these channels WILL be force-closed"
+                );
+            } else {
+                // Drop the restored manager so the next unlock re-runs restore + guard.
+                if let Err(e) = kv_store.remove_local_only(
+                    CHANNEL_MANAGER_PERSISTENCE_PRIMARY_NAMESPACE,
+                    CHANNEL_MANAGER_PERSISTENCE_SECONDARY_NAMESPACE,
+                    CHANNEL_MANAGER_PERSISTENCE_KEY,
+                ) {
+                    tracing::warn!(error = %e, "failed to drop restored channel manager key");
+                }
+                return Err(APIError::FailedVssInit(format!(
+                    "VSS restore is inconsistent: the restored channel manager does not know \
+                     channel(s) {lost_channels:?} that the restored channel monitors consider \
+                     open. Unlocking would force-close them. Pass --vss-allow-empty-restore \
+                     to proceed anyway and accept the force-close."
+                )));
+            }
+        }
+    }
+
     // Prepare the RGB wallet
     let (account_xpub_vanilla, account_xpub_colored, master_fingerprint, rgb_wallet_mnemonic) =
         if external_signer_mode {
@@ -4659,7 +4732,7 @@ pub(crate) async fn start_ldk(
                 chain_source.clone(),
                 rgb_output_spender,
                 rgb_wallet_wrapper.clone(),
-                KVStoreSyncWrapper(kv_store.clone()),
+                Clone::clone(&bp_kv_store),
                 logger.clone(),
             );
             (channel_manager.current_best_block(), sweeper)
@@ -4671,7 +4744,7 @@ pub(crate) async fn start_ldk(
                 chain_source.clone(),
                 rgb_output_spender.clone(),
                 rgb_wallet_wrapper.clone(),
-                KVStoreSyncWrapper(kv_store.clone()),
+                Clone::clone(&bp_kv_store),
                 logger.clone(),
             );
             let mut reader = io::Cursor::new(&mut bytes);
@@ -5097,8 +5170,8 @@ pub(crate) async fn start_ldk(
         Arc::clone(&logger),
     ));
 
-    // Persist ChannelManager and NetworkGraph
-    let persister = KVStoreSyncWrapper(Arc::clone(&kv_store));
+    // Persist ChannelManager (remote-first with VSS), NetworkGraph and scorer.
+    let persister = Clone::clone(&bp_kv_store);
 
     // Read swaps info from KVStore
     let maker_swaps = Arc::new(Mutex::new({
@@ -5290,6 +5363,26 @@ pub(crate) async fn start_ldk(
         bp_future,
         Arc::clone(&stop_processing),
     ));
+
+    // Periodically drain queued VSS replications so an idle node still heals
+    // after an outage (drains are otherwise only triggered by new writes).
+    #[cfg(feature = "vss")]
+    {
+        let drain_store = Arc::clone(&kv_store);
+        let stop_drain = Arc::clone(&stop_processing);
+        tokio::spawn(async move {
+            let mut interval = tokio::time::interval(Duration::from_secs(60));
+            interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+            loop {
+                interval.tick().await;
+                if stop_drain.load(Ordering::Acquire) {
+                    break;
+                }
+                let store = Arc::clone(&drain_store);
+                let _ = tokio::task::spawn_blocking(move || store.drain_pending()).await;
+            }
+        });
+    }
 
     // Regularly reconnect to channel peers.
     let connect_cm = Arc::clone(&channel_manager);
@@ -5545,9 +5638,55 @@ impl AppState {
     }
 }
 
+#[cfg(feature = "vss")]
+const BP_SHUTDOWN_FLUSH_TIMEOUT: Duration = Duration::from_secs(30);
+
+#[cfg(feature = "vss")]
+fn log_bp_shutdown_result(res: Result<Result<(), io::Error>, tokio::task::JoinError>) {
+    match res {
+        Ok(Ok(())) => {}
+        Ok(Err(e)) => {
+            tracing::error!(error = %e, "background processor exited with error during shutdown")
+        }
+        Err(e) => tracing::error!(error = %e, "background processor task join failed"),
+    }
+}
+
 pub(crate) async fn stop_ldk(app_state: Arc<AppState>) {
     tracing::info!("Stopping LDK");
 
+    #[cfg(feature = "vss")]
+    let stores = app_state
+        .get_unlocked_app_state()
+        .await
+        .as_ref()
+        .map(|unlocked| {
+            (
+                Arc::clone(&unlocked.kv_store),
+                Arc::clone(&unlocked.monitor_kv_store),
+            )
+        });
+
+    #[cfg(feature = "vss")]
+    if let Some(mut join_handle) = app_state.stop_ldk() {
+        // Bounded flush: give the final remote-first persists time to reach
+        // VSS, then abort outage-pending retries so shutdown cannot hang.
+        match tokio::time::timeout(BP_SHUTDOWN_FLUSH_TIMEOUT, &mut join_handle).await {
+            Ok(res) => log_bp_shutdown_result(res),
+            Err(_) => {
+                tracing::error!(
+                    "final VSS flush did not complete in {:?}; aborting pending \
+                     retries — last channel-manager state may not have replicated",
+                    BP_SHUTDOWN_FLUSH_TIMEOUT
+                );
+                if let Some((_, ref monitor_kv_store)) = stores {
+                    monitor_kv_store.stop();
+                }
+                log_bp_shutdown_result(join_handle.await);
+            }
+        }
+    }
+    #[cfg(not(feature = "vss"))]
     if let Some(join_handle) = app_state.stop_ldk() {
         join_handle.await.unwrap().unwrap();
     }
@@ -5557,20 +5696,28 @@ pub(crate) async fn stop_ldk(app_state: Arc<AppState>) {
     // /vssclearfence. Hard kills still leave the fence behind by design.
     #[cfg(feature = "vss")]
     {
-        let stores = app_state
-            .get_unlocked_app_state()
-            .await
-            .as_ref()
-            .map(|unlocked| {
-                (
-                    Arc::clone(&unlocked.kv_store),
-                    Arc::clone(&unlocked.monitor_kv_store),
-                )
-            });
         if let Some((kv_store, monitor_kv_store)) = stores {
-            // Abort outage-pending monitor writes before giving up the fence:
-            // a retry landing after another instance owns the store would
-            // corrupt its state.
+            // Best-effort flush of queued replications before the fence goes.
+            let flush_store = Arc::clone(&kv_store);
+            let flush = tokio::task::spawn_blocking(move || {
+                flush_store.flush_pending_until(std::time::Instant::now() + Duration::from_secs(10))
+            });
+            match flush.await {
+                Ok(0) => {}
+                Ok(n) => tracing::error!(
+                    pending = n,
+                    "VSS replications still queued at shutdown; they persist locally and \
+                     will retry on next unlock"
+                ),
+                Err(e) => tracing::warn!(error = %e, "pending-queue flush task failed"),
+            }
+            // Stop drains and abort outage-pending monitor writes before
+            // giving up the fence: a write landing after another instance
+            // owns the store would corrupt its state.
+            let stop_store = Arc::clone(&kv_store);
+            if let Err(e) = tokio::task::spawn_blocking(move || stop_store.stop()).await {
+                tracing::warn!(error = %e, "pending-queue stop task failed");
+            }
             monitor_kv_store.stop();
             match tokio::task::spawn_blocking(move || kv_store.release_vss_fence_if_owned()).await {
                 Ok(Ok(())) => {}

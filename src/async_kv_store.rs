@@ -227,3 +227,180 @@ impl KVStore for RemoteFirstKvStore {
         Box::pin(async move { KVStoreSync::list(&*local, &primary, &secondary) })
     }
 }
+
+/// Routes the background processor's persistence per key: the channel manager
+/// and sweeper state are remote-first (the backup must never lag the monitors,
+/// and forgotten sweeper outputs are unrecoverable), network graph and scorer
+/// are local-only (rebuildable), anything else keeps best-effort replication.
+pub struct BpKvStoreRouter {
+    remote_first: Arc<RemoteFirstKvStore>,
+    local: Arc<SeaOrmKvStore>,
+    rest: Arc<crate::synced_kv_store::SyncedKvStore>,
+}
+
+enum BpRoute {
+    RemoteFirst,
+    LocalOnly,
+    Rest,
+}
+
+fn bp_route(primary: &str, secondary: &str, key: &str) -> BpRoute {
+    use lightning::util::persist::{
+        CHANNEL_MANAGER_PERSISTENCE_KEY, CHANNEL_MANAGER_PERSISTENCE_PRIMARY_NAMESPACE,
+        CHANNEL_MANAGER_PERSISTENCE_SECONDARY_NAMESPACE, NETWORK_GRAPH_PERSISTENCE_KEY,
+        NETWORK_GRAPH_PERSISTENCE_PRIMARY_NAMESPACE, NETWORK_GRAPH_PERSISTENCE_SECONDARY_NAMESPACE,
+        OUTPUT_SWEEPER_PERSISTENCE_KEY, OUTPUT_SWEEPER_PERSISTENCE_PRIMARY_NAMESPACE,
+        OUTPUT_SWEEPER_PERSISTENCE_SECONDARY_NAMESPACE, SCORER_PERSISTENCE_KEY,
+        SCORER_PERSISTENCE_PRIMARY_NAMESPACE, SCORER_PERSISTENCE_SECONDARY_NAMESPACE,
+    };
+    if (primary, secondary, key)
+        == (
+            CHANNEL_MANAGER_PERSISTENCE_PRIMARY_NAMESPACE,
+            CHANNEL_MANAGER_PERSISTENCE_SECONDARY_NAMESPACE,
+            CHANNEL_MANAGER_PERSISTENCE_KEY,
+        )
+        || (primary, secondary, key)
+            == (
+                OUTPUT_SWEEPER_PERSISTENCE_PRIMARY_NAMESPACE,
+                OUTPUT_SWEEPER_PERSISTENCE_SECONDARY_NAMESPACE,
+                OUTPUT_SWEEPER_PERSISTENCE_KEY,
+            )
+    {
+        BpRoute::RemoteFirst
+    } else if (primary, secondary, key)
+        == (
+            NETWORK_GRAPH_PERSISTENCE_PRIMARY_NAMESPACE,
+            NETWORK_GRAPH_PERSISTENCE_SECONDARY_NAMESPACE,
+            NETWORK_GRAPH_PERSISTENCE_KEY,
+        )
+        || (primary, secondary, key)
+            == (
+                SCORER_PERSISTENCE_PRIMARY_NAMESPACE,
+                SCORER_PERSISTENCE_SECONDARY_NAMESPACE,
+                SCORER_PERSISTENCE_KEY,
+            )
+    {
+        BpRoute::LocalOnly
+    } else {
+        BpRoute::Rest
+    }
+}
+
+impl BpKvStoreRouter {
+    pub fn new(
+        remote_first: Arc<RemoteFirstKvStore>,
+        local: Arc<SeaOrmKvStore>,
+        rest: Arc<crate::synced_kv_store::SyncedKvStore>,
+    ) -> Self {
+        Self {
+            remote_first,
+            local,
+            rest,
+        }
+    }
+}
+
+impl KVStore for BpKvStoreRouter {
+    fn read(
+        &self,
+        primary_namespace: &str,
+        secondary_namespace: &str,
+        key: &str,
+    ) -> AsyncResult<'static, Vec<u8>, io::Error> {
+        match bp_route(primary_namespace, secondary_namespace, key) {
+            BpRoute::RemoteFirst => {
+                self.remote_first
+                    .read(primary_namespace, secondary_namespace, key)
+            }
+            BpRoute::LocalOnly => {
+                let res =
+                    KVStoreSync::read(&*self.local, primary_namespace, secondary_namespace, key);
+                Box::pin(async move { res })
+            }
+            BpRoute::Rest => {
+                let res =
+                    KVStoreSync::read(&*self.rest, primary_namespace, secondary_namespace, key);
+                Box::pin(async move { res })
+            }
+        }
+    }
+
+    fn write(
+        &self,
+        primary_namespace: &str,
+        secondary_namespace: &str,
+        key: &str,
+        buf: Vec<u8>,
+    ) -> AsyncResult<'static, (), io::Error> {
+        match bp_route(primary_namespace, secondary_namespace, key) {
+            BpRoute::RemoteFirst => {
+                self.remote_first
+                    .write(primary_namespace, secondary_namespace, key, buf)
+            }
+            BpRoute::LocalOnly => {
+                let res = KVStoreSync::write(
+                    &*self.local,
+                    primary_namespace,
+                    secondary_namespace,
+                    key,
+                    buf,
+                );
+                Box::pin(async move { res })
+            }
+            BpRoute::Rest => {
+                let res = KVStoreSync::write(
+                    &*self.rest,
+                    primary_namespace,
+                    secondary_namespace,
+                    key,
+                    buf,
+                );
+                Box::pin(async move { res })
+            }
+        }
+    }
+
+    fn remove(
+        &self,
+        primary_namespace: &str,
+        secondary_namespace: &str,
+        key: &str,
+        lazy: bool,
+    ) -> AsyncResult<'static, (), io::Error> {
+        match bp_route(primary_namespace, secondary_namespace, key) {
+            BpRoute::RemoteFirst => {
+                self.remote_first
+                    .remove(primary_namespace, secondary_namespace, key, lazy)
+            }
+            BpRoute::LocalOnly => {
+                let res = KVStoreSync::remove(
+                    &*self.local,
+                    primary_namespace,
+                    secondary_namespace,
+                    key,
+                    lazy,
+                );
+                Box::pin(async move { res })
+            }
+            BpRoute::Rest => {
+                let res = KVStoreSync::remove(
+                    &*self.rest,
+                    primary_namespace,
+                    secondary_namespace,
+                    key,
+                    lazy,
+                );
+                Box::pin(async move { res })
+            }
+        }
+    }
+
+    fn list(
+        &self,
+        primary_namespace: &str,
+        secondary_namespace: &str,
+    ) -> AsyncResult<'static, Vec<String>, io::Error> {
+        let res = KVStoreSync::list(&*self.local, primary_namespace, secondary_namespace);
+        Box::pin(async move { res })
+    }
+}

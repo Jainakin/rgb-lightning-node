@@ -976,4 +976,261 @@ mod tests {
 
         client.delete_backup().await.expect("cleanup");
     }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn synced_kv_store_drain_never_regresses_newer_write() {
+        if !vss_server_available() {
+            eprintln!("SKIP: VSS server not available at {VSS_URL}");
+            return;
+        }
+
+        let proxy = super::super::vss_offline_force_close::VssProxy::start();
+        let (signing_key, store_id) = generate_test_keys();
+        let remote =
+            Arc::new(VssKvStore::new(proxy.url(), store_id, signing_key).expect("vss store"));
+        let synced = SyncedKvStore::with_vss(
+            Arc::new(SeaOrmKvStore::from_connection(create_test_sqlite())),
+            Arc::clone(&remote),
+        );
+
+        synced
+            .write("", "", "aux_state", b"v1".to_vec())
+            .expect("v1");
+
+        proxy.go_offline();
+        synced
+            .write("", "", "aux_state", b"v2".to_vec())
+            .expect("v2 local");
+        assert_eq!(synced.pending_remote_writes(), 1, "v2 must be queued");
+
+        proxy.go_online();
+        synced
+            .write("", "", "aux_state", b"v3".to_vec())
+            .expect("v3");
+
+        assert_eq!(
+            KVStoreSync::read(&*remote, "", "", "aux_state").expect("remote read"),
+            b"v3".to_vec(),
+            "remote must hold the newest value; a stale queued write must not regress it"
+        );
+    }
+
+    /// Manager writes must be VSS-durable before completing; graph/scorer must
+    /// never reach VSS; aux keys keep best-effort replication.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn bp_router_routes_manager_remote_first() {
+        use lightning::util::persist::{
+            KVStore, NETWORK_GRAPH_PERSISTENCE_KEY, SCORER_PERSISTENCE_KEY,
+        };
+
+        if !vss_server_available() {
+            eprintln!("SKIP: VSS server not available at {VSS_URL}");
+            return;
+        }
+
+        let proxy = super::super::vss_offline_force_close::VssProxy::start();
+        let (signing_key, store_id) = generate_test_keys();
+        let remote =
+            Arc::new(VssKvStore::new(proxy.url(), store_id, signing_key).expect("vss store"));
+        let local = Arc::new(SeaOrmKvStore::from_connection(create_test_sqlite()));
+        let remote_first = Arc::new(crate::async_kv_store::RemoteFirstKvStore::new(
+            Arc::clone(&local),
+            Some(Arc::clone(&remote)),
+        ));
+        let synced = Arc::new(SyncedKvStore::with_vss(
+            Arc::clone(&local),
+            Arc::clone(&remote),
+        ));
+        let router = Arc::new(crate::async_kv_store::BpKvStoreRouter::new(
+            Arc::clone(&remote_first),
+            Arc::clone(&local),
+            synced,
+        ));
+
+        router
+            .write("", "", "manager", b"m1".to_vec())
+            .await
+            .expect("manager write");
+        assert_eq!(
+            remote.read_async("", "", "manager").await.expect("on VSS"),
+            b"m1".to_vec(),
+            "manager must be durable on VSS when the write completes"
+        );
+
+        router
+            .write(
+                lightning::util::persist::OUTPUT_SWEEPER_PERSISTENCE_PRIMARY_NAMESPACE,
+                lightning::util::persist::OUTPUT_SWEEPER_PERSISTENCE_SECONDARY_NAMESPACE,
+                lightning::util::persist::OUTPUT_SWEEPER_PERSISTENCE_KEY,
+                b"sw1".to_vec(),
+            )
+            .await
+            .expect("sweeper write");
+        assert_eq!(
+            remote
+                .read_async(
+                    lightning::util::persist::OUTPUT_SWEEPER_PERSISTENCE_PRIMARY_NAMESPACE,
+                    lightning::util::persist::OUTPUT_SWEEPER_PERSISTENCE_SECONDARY_NAMESPACE,
+                    lightning::util::persist::OUTPUT_SWEEPER_PERSISTENCE_KEY,
+                )
+                .await
+                .expect("on VSS"),
+            b"sw1".to_vec(),
+            "sweeper state must be durable on VSS when the write completes"
+        );
+
+        router
+            .write("", "", NETWORK_GRAPH_PERSISTENCE_KEY, b"g1".to_vec())
+            .await
+            .expect("graph write");
+        router
+            .write("", "", SCORER_PERSISTENCE_KEY, b"s1".to_vec())
+            .await
+            .expect("scorer write");
+        assert!(
+            remote
+                .read_async("", "", NETWORK_GRAPH_PERSISTENCE_KEY)
+                .await
+                .is_err(),
+            "network graph must not replicate to VSS"
+        );
+        assert!(
+            remote
+                .read_async("", "", SCORER_PERSISTENCE_KEY)
+                .await
+                .is_err(),
+            "scorer must not replicate to VSS"
+        );
+        assert!(
+            KVStoreSync::read(&*local, "", "", NETWORK_GRAPH_PERSISTENCE_KEY).is_ok(),
+            "network graph must be stored locally"
+        );
+
+        // Manager write during an outage blocks (retry loop) instead of
+        // acking; it completes once VSS is back and lands durably.
+        proxy.go_offline();
+        let router_task = Arc::clone(&router);
+        let pending =
+            tokio::spawn(async move { router_task.write("", "", "manager", b"m2".to_vec()).await });
+        tokio::time::sleep(Duration::from_secs(3)).await;
+        assert!(
+            !pending.is_finished(),
+            "manager write must not complete while VSS is unreachable"
+        );
+        proxy.go_online();
+        tokio::time::timeout(Duration::from_secs(30), pending)
+            .await
+            .expect("write must finish after recovery")
+            .expect("join")
+            .expect("write ok");
+        assert_eq!(
+            remote.read_async("", "", "manager").await.expect("on VSS"),
+            b"m2".to_vec(),
+        );
+    }
+
+    /// Queued replications must survive a restart: a new SyncedKvStore over
+    /// the same local DB reloads them and a drain delivers them to VSS.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn pending_queue_survives_restart_and_drains() {
+        if !vss_server_available() {
+            eprintln!("SKIP: VSS server not available at {VSS_URL}");
+            return;
+        }
+
+        let proxy = super::super::vss_offline_force_close::VssProxy::start();
+        let (signing_key, store_id) = generate_test_keys();
+        let remote =
+            Arc::new(VssKvStore::new(proxy.url(), store_id, signing_key).expect("vss store"));
+        let conn = create_test_sqlite();
+        let local = Arc::new(SeaOrmKvStore::from_connection(Arc::clone(&conn)));
+
+        proxy.go_offline();
+        {
+            let synced = SyncedKvStore::with_vss(Arc::clone(&local), Arc::clone(&remote));
+            synced
+                .write("", "", "aux_a", b"v_a".to_vec())
+                .expect("local write during outage");
+            synced
+                .write("", "", "aux_b", b"v_b".to_vec())
+                .expect("local write during outage");
+            assert_eq!(synced.pending_remote_writes(), 2);
+        }
+
+        // "Restart": fresh store instance over the same local DB.
+        let synced = SyncedKvStore::with_vss(
+            Arc::new(SeaOrmKvStore::from_connection(conn)),
+            Arc::clone(&remote),
+        );
+        assert_eq!(
+            synced.pending_remote_writes(),
+            2,
+            "pending replications must be reloaded from the local DB"
+        );
+
+        proxy.go_online();
+        synced.drain_pending();
+        assert_eq!(synced.pending_remote_writes(), 0);
+        assert_eq!(
+            KVStoreSync::read(&*remote, "", "", "aux_a").expect("on VSS"),
+            b"v_a".to_vec()
+        );
+        assert_eq!(
+            KVStoreSync::read(&*remote, "", "", "aux_b").expect("on VSS"),
+            b"v_b".to_vec()
+        );
+
+        // Delivered rows must be gone from disk, or a later restart would
+        // resurrect and re-send stale values.
+        let reopened = SyncedKvStore::with_vss(Arc::clone(&local), Arc::clone(&remote));
+        assert_eq!(
+            reopened.pending_remote_writes(),
+            0,
+            "drained entries must not survive on disk"
+        );
+    }
+
+    /// A queued removal must also survive a restart and converge on VSS.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn pending_removal_survives_restart_and_drains() {
+        if !vss_server_available() {
+            eprintln!("SKIP: VSS server not available at {VSS_URL}");
+            return;
+        }
+
+        let proxy = super::super::vss_offline_force_close::VssProxy::start();
+        let (signing_key, store_id) = generate_test_keys();
+        let remote =
+            Arc::new(VssKvStore::new(proxy.url(), store_id, signing_key).expect("vss store"));
+        let conn = create_test_sqlite();
+        let local = Arc::new(SeaOrmKvStore::from_connection(Arc::clone(&conn)));
+
+        {
+            let synced = SyncedKvStore::with_vss(Arc::clone(&local), Arc::clone(&remote));
+            synced
+                .write("", "", "aux_rm", b"v".to_vec())
+                .expect("write");
+            proxy.go_offline();
+            synced
+                .remove("", "", "aux_rm", false)
+                .expect("local remove");
+            assert_eq!(synced.pending_remote_writes(), 1);
+        }
+
+        let synced = SyncedKvStore::with_vss(
+            Arc::new(SeaOrmKvStore::from_connection(conn)),
+            Arc::clone(&remote),
+        );
+        assert_eq!(synced.pending_remote_writes(), 1);
+
+        proxy.go_online();
+        synced.drain_pending();
+        assert_eq!(synced.pending_remote_writes(), 0);
+        assert!(
+            KVStoreSync::read(&*remote, "", "", "aux_rm").is_err(),
+            "queued removal must have converged on VSS"
+        );
+        let reopened = SyncedKvStore::with_vss(Arc::clone(&local), Arc::clone(&remote));
+        assert_eq!(reopened.pending_remote_writes(), 0);
+    }
 }
