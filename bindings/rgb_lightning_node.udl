@@ -57,6 +57,8 @@ interface SdkNode {
     [Throws=RlnError]
     void createutxos(SdkCreateUtxosRequest request);
     [Throws=RlnError]
+    AssetLinkRecord asset_link(SdkAssetLinkRequest request);
+    [Throws=RlnError]
     AssetNia issueassetnia(SdkIssueAssetNiaRequest request);
     [Throws=RlnError]
     AssetCfa issueassetcfa(SdkIssueAssetCfaRequest request);
@@ -330,6 +332,13 @@ dictionary AssetBalanceInfo {
     u64 offchain_inbound;
 };
 
+dictionary AssetLinkRecord {
+    ContractId parent_asset_id;
+    ContractId? child_asset_id;
+    u64? created_at;
+    Txid? txid;
+};
+
 dictionary AssetMetadataInfo {
     string asset_schema;
     u64 initial_supply;
@@ -341,6 +350,9 @@ dictionary AssetMetadataInfo {
     string? ticker;
     string? details;
     Token? token;
+    RgbOutpoint? unspent_link_right_outpoint;
+    string? linked_from_asset_id;
+    string? linked_to_asset_id;
 };
 
 dictionary AssetMediaResponse {
@@ -441,6 +453,14 @@ dictionary AssetIfa {
     AssetBalanceInfo balance;
     Media? media;
     string? reject_list_url;
+    RgbOutpoint? issuance_link_right_outpoint;
+    string? linked_from_asset_id;
+    string? linked_to_asset_id;
+};
+
+dictionary RgbOutpoint {
+    string txid;
+    u32 vout;
 };
 
 dictionary ListAssetsResponse {
@@ -465,6 +485,7 @@ dictionary DecodeLnInvoiceResponse {
 
 dictionary DecodeRgbInvoiceResponse {
     string recipient_id;
+    string proxy_recipient_id;
     string recipient_type;
     string? asset_schema;
     ContractId? asset_id;
@@ -500,6 +521,7 @@ dictionary Transfer {
     string kind;
     Txid? txid;
     string? recipient_id;
+    string? proxy_recipient_id;
     string? receive_utxo;
     string? change_utxo;
     i64? expiration;
@@ -677,6 +699,21 @@ dictionary SdkIssueAssetIfaRequest {
     string name;
     u8 precision;
     string? reject_list_url;
+    IfaIssuanceType? issuance_type = null;
+};
+
+[Enum]
+interface IfaIssuanceType {
+    Legacy();
+    LinkRightOnly();
+    LinkedFromParent(ContractId contract_id, boolean request_link_right);
+};
+
+
+dictionary SdkAssetLinkRequest {
+    ContractId parent_asset_id;
+    ContractId child_asset_id;
+    u8 min_confirmations;
 };
 
 dictionary SdkIssueAssetUdaRequest {

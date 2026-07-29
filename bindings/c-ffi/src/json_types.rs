@@ -14,26 +14,27 @@ use std::str::FromStr;
 use hex::DisplayHex;
 use hex::FromHex;
 use rgb_lightning_node::{
-    AddressInfo, AssetBalanceInfo, AssetCfa, AssetIfa, AssetMediaResponse, AssetMetadataInfo,
-    AssetNia, AssetUda, AssignmentKind, BlockTime, BtcBalance, BtcBalanceInfo,
-    CancelHodlInvoiceRequest, Channel, ChannelId, ChannelStatus, CheckIndexerUrlResponse,
-    ClaimHodlInvoiceRequest, ClaimHodlInvoiceResponse, ContractId, DecodeLnInvoiceResponse,
-    DecodeRgbInvoiceResponse, EmbeddedMedia, EstimateFeeResponse, HtlcStatus, InflateRequest,
-    InflateResponse, InvoiceStatus, ListAssetsResponse, LnInvoiceRequest, LnInvoiceResponse, Media,
-    MediaAttachment, NetworkInfo, NodeInfo, Payment, PaymentHash, PaymentType, Peer, ProofOfReserves,
-    PublicKey, RecipientId, RgbAllocation, SdkCloseChannelRequest, SdkCreateUtxosRequest,
-    SdkDisconnectPeerRequest, SdkFailTransfersRequest, SdkFailTransfersResponse, SdkInitRequest,
-    SdkIssueAssetCfaRequest, SdkIssueAssetIfaRequest, SdkIssueAssetNiaRequest,
-    SdkIssueAssetUdaRequest, SdkKeysendRequest, SdkKeysendResponse, SdkMakerExecuteRequest,
-    SdkMakerInitRequest, SdkMakerInitResponse, SdkOpenChannelRequest, SdkOpenChannelResponse,
-    SdkPostAssetMediaRequest, SdkPostAssetMediaResponse, SdkRefreshTransfersRequest,
-    SdkRgbInvoiceRequest, SdkRgbInvoiceResponse, SdkSendBtcRequest, SdkSendBtcResponse,
-    SdkExternalSignerBootstrap, SdkSendOnionMessageRequest, SdkSendPaymentRequest,
-    SdkSendPaymentResponse, SdkTakerRequest, SdkUnlockRequest, SdkVssClearFenceRequest, SendRgbRequest, SendRgbResponse,
-    AssetRecipients, RgbRecipient,
-    SignMessageResponse, Swap, SwapList, SwapStatus, Token, TokenLight, Transaction,
-    TransactionType, Transfer, TransferTransportEndpoint, TransportEndpoint, Txid, Unspent, Utxo,
-    VerifyMessageResponse, WitnessData,
+    AddressInfo, AssetBalanceInfo, AssetCfa, AssetIfa, AssetLinkRecord, AssetMediaResponse,
+    AssetMetadataInfo, AssetNia, AssetRecipients, AssetUda, AssignmentKind, BlockTime, BtcBalance,
+    BtcBalanceInfo, CancelHodlInvoiceRequest, Channel, ChannelId, ChannelStatus,
+    CheckIndexerUrlResponse, ClaimHodlInvoiceRequest, ClaimHodlInvoiceResponse, ContractId,
+    DecodeLnInvoiceResponse, DecodeRgbInvoiceResponse, EmbeddedMedia, EstimateFeeResponse,
+    HtlcStatus, IfaIssuanceType, InflateRequest, InflateResponse, InvoiceStatus,
+    ListAssetsResponse, LnInvoiceRequest, LnInvoiceResponse, Media, MediaAttachment, NetworkInfo,
+    NodeInfo, Payment, PaymentHash, PaymentType, Peer, ProofOfReserves, PublicKey, RecipientId,
+    RgbAllocation, RgbOutpoint, RgbRecipient, SdkAssetLinkRequest, SdkCloseChannelRequest,
+    SdkCreateUtxosRequest, SdkDisconnectPeerRequest, SdkExternalSignerBootstrap,
+    SdkFailTransfersRequest, SdkFailTransfersResponse, SdkInitRequest, SdkIssueAssetCfaRequest,
+    SdkIssueAssetIfaRequest, SdkIssueAssetNiaRequest, SdkIssueAssetUdaRequest, SdkKeysendRequest,
+    SdkKeysendResponse, SdkMakerExecuteRequest, SdkMakerInitRequest, SdkMakerInitResponse,
+    SdkOpenChannelRequest, SdkOpenChannelResponse, SdkPostAssetMediaRequest,
+    SdkPostAssetMediaResponse, SdkRefreshTransfersRequest, SdkRgbInvoiceRequest,
+    SdkRgbInvoiceResponse, SdkSendBtcRequest, SdkSendBtcResponse, SdkSendOnionMessageRequest,
+    SdkSendPaymentRequest, SdkSendPaymentResponse, SdkTakerRequest, SdkUnlockRequest,
+    SdkVssClearFenceRequest, SendRgbRequest, SendRgbResponse, SignMessageResponse, Swap, SwapList,
+    SwapStatus, Token, TokenLight, Transaction, TransactionType, Transfer,
+    TransferTransportEndpoint, TransportEndpoint, Txid, Unspent, Utxo, VerifyMessageResponse,
+    WitnessData,
 };
 use serde::{Deserialize, Serialize};
 
@@ -142,7 +143,11 @@ impl TryFrom<JsonSdkInitRequest> for SdkInitRequest {
     fn try_from(j: JsonSdkInitRequest) -> Result<Self, Self::Error> {
         let virtual_peer_pubkeys = j
             .virtual_peer_pubkeys
-            .map(|v| v.iter().map(|s| parse_pubkey(s)).collect::<Result<Vec<_>, _>>())
+            .map(|v| {
+                v.iter()
+                    .map(|s| parse_pubkey(s))
+                    .collect::<Result<Vec<_>, _>>()
+            })
             .transpose()?;
         Ok(SdkInitRequest {
             storage_dir_path: j.storage_dir_path,
@@ -784,6 +789,7 @@ impl From<DecodeLnInvoiceResponse> for JsonDecodeLnInvoiceResponse {
 #[derive(Debug, Serialize)]
 pub(crate) struct JsonDecodeRgbInvoiceResponse {
     pub recipient_id: String,
+    pub proxy_recipient_id: String,
     pub recipient_type: String,
     pub asset_schema: Option<String>,
     pub asset_id: Option<String>,
@@ -797,6 +803,7 @@ impl From<DecodeRgbInvoiceResponse> for JsonDecodeRgbInvoiceResponse {
     fn from(r: DecodeRgbInvoiceResponse) -> Self {
         JsonDecodeRgbInvoiceResponse {
             recipient_id: r.recipient_id,
+            proxy_recipient_id: r.proxy_recipient_id,
             recipient_type: r.recipient_type,
             asset_schema: r.asset_schema,
             asset_id: r.asset_id.as_ref().map(fmt_contract_id),
@@ -1051,8 +1058,46 @@ impl From<InflateResponse> for JsonInflateResponse {
 }
 
 // ---------------------------------------------------------------------------
-// Asset issuance
+// Asset issuance and contract linking
 // ---------------------------------------------------------------------------
+
+#[derive(Debug, Deserialize)]
+pub(crate) struct JsonAssetLinkRequest {
+    pub parent_asset_id: String,
+    pub child_asset_id: String,
+    pub min_confirmations: u8,
+}
+
+impl TryFrom<JsonAssetLinkRequest> for SdkAssetLinkRequest {
+    type Error = Error;
+
+    fn try_from(j: JsonAssetLinkRequest) -> Result<Self, Self::Error> {
+        Ok(Self {
+            parent_asset_id: parse_contract_id(&j.parent_asset_id)?,
+            child_asset_id: parse_contract_id(&j.child_asset_id)?,
+            min_confirmations: j.min_confirmations,
+        })
+    }
+}
+
+#[derive(Debug, Serialize)]
+pub(crate) struct JsonAssetLinkRecord {
+    pub parent_asset_id: String,
+    pub child_asset_id: Option<String>,
+    pub created_at: Option<u64>,
+    pub txid: Option<String>,
+}
+
+impl From<AssetLinkRecord> for JsonAssetLinkRecord {
+    fn from(link: AssetLinkRecord) -> Self {
+        Self {
+            parent_asset_id: fmt_contract_id(&link.parent_asset_id),
+            child_asset_id: link.child_asset_id.map(|id| fmt_contract_id(&id)),
+            created_at: link.created_at,
+            txid: link.txid.map(|txid| fmt_txid(&txid)),
+        }
+    }
+}
 
 #[derive(Debug, Deserialize)]
 pub(crate) struct JsonIssueAssetNiaRequest {
@@ -1105,18 +1150,50 @@ pub(crate) struct JsonIssueAssetIfaRequest {
     pub precision: u8,
     #[serde(default)]
     pub reject_list_url: Option<String>,
+    #[serde(default)]
+    pub issuance_type: Option<JsonIfaIssuanceType>,
 }
 
-impl From<JsonIssueAssetIfaRequest> for SdkIssueAssetIfaRequest {
-    fn from(j: JsonIssueAssetIfaRequest) -> Self {
-        SdkIssueAssetIfaRequest {
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) enum JsonIfaIssuanceType {
+    Legacy,
+    LinkRightOnly,
+    LinkedFromParent {
+        contract_id: String,
+        #[serde(default)]
+        request_link_right: bool,
+    },
+}
+
+impl TryFrom<JsonIssueAssetIfaRequest> for SdkIssueAssetIfaRequest {
+    type Error = Error;
+
+    fn try_from(j: JsonIssueAssetIfaRequest) -> Result<Self, Self::Error> {
+        Ok(SdkIssueAssetIfaRequest {
             amounts: j.amounts,
             inflation_amounts: j.inflation_amounts,
             ticker: j.ticker,
             name: j.name,
             precision: j.precision,
             reject_list_url: j.reject_list_url,
-        }
+            issuance_type: j
+                .issuance_type
+                .map(|issuance_type| -> Result<IfaIssuanceType, Error> {
+                    match issuance_type {
+                        JsonIfaIssuanceType::Legacy => Ok(IfaIssuanceType::Legacy),
+                        JsonIfaIssuanceType::LinkRightOnly => Ok(IfaIssuanceType::LinkRightOnly),
+                        JsonIfaIssuanceType::LinkedFromParent {
+                            contract_id,
+                            request_link_right,
+                        } => Ok(IfaIssuanceType::LinkedFromParent {
+                            contract_id: parse_contract_id(&contract_id)?,
+                            request_link_right,
+                        }),
+                    }
+                })
+                .transpose()?,
+        })
     }
 }
 
@@ -1358,6 +1435,24 @@ pub(crate) struct JsonAssetIfa {
     pub balance: JsonAssetBalanceInfo,
     pub media: Option<JsonMedia>,
     pub reject_list_url: Option<String>,
+    pub issuance_link_right_outpoint: Option<JsonRgbOutpoint>,
+    pub linked_from_asset_id: Option<String>,
+    pub linked_to_asset_id: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+pub(crate) struct JsonRgbOutpoint {
+    pub txid: String,
+    pub vout: u32,
+}
+
+impl From<RgbOutpoint> for JsonRgbOutpoint {
+    fn from(outpoint: RgbOutpoint) -> Self {
+        Self {
+            txid: outpoint.txid,
+            vout: outpoint.vout,
+        }
+    }
 }
 
 impl From<AssetIfa> for JsonAssetIfa {
@@ -1376,6 +1471,9 @@ impl From<AssetIfa> for JsonAssetIfa {
             balance: a.balance.into(),
             media: a.media.map(Into::into),
             reject_list_url: a.reject_list_url,
+            issuance_link_right_outpoint: a.issuance_link_right_outpoint.map(Into::into),
+            linked_from_asset_id: a.linked_from_asset_id,
+            linked_to_asset_id: a.linked_to_asset_id,
         }
     }
 }
@@ -1440,6 +1538,9 @@ pub(crate) struct JsonAssetMetadataInfo {
     pub ticker: Option<String>,
     pub details: Option<String>,
     pub token: Option<JsonToken>,
+    pub unspent_link_right_outpoint: Option<JsonRgbOutpoint>,
+    pub linked_from_asset_id: Option<String>,
+    pub linked_to_asset_id: Option<String>,
 }
 
 impl From<AssetMetadataInfo> for JsonAssetMetadataInfo {
@@ -1455,6 +1556,9 @@ impl From<AssetMetadataInfo> for JsonAssetMetadataInfo {
             ticker: a.ticker,
             details: a.details,
             token: a.token.map(Into::into),
+            unspent_link_right_outpoint: a.unspent_link_right_outpoint.map(Into::into),
+            linked_from_asset_id: a.linked_from_asset_id,
+            linked_to_asset_id: a.linked_to_asset_id,
         }
     }
 }
@@ -1783,6 +1887,7 @@ pub(crate) struct JsonTransfer {
     pub kind: String,
     pub txid: Option<String>,
     pub recipient_id: Option<String>,
+    pub proxy_recipient_id: Option<String>,
     pub receive_utxo: Option<String>,
     pub change_utxo: Option<String>,
     pub expiration: Option<i64>,
@@ -1801,6 +1906,7 @@ impl From<Transfer> for JsonTransfer {
             kind: t.kind,
             txid: t.txid.as_ref().map(fmt_txid),
             recipient_id: t.recipient_id,
+            proxy_recipient_id: t.proxy_recipient_id,
             receive_utxo: t.receive_utxo,
             change_utxo: t.change_utxo,
             expiration: t.expiration,

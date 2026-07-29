@@ -99,6 +99,24 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/AssetBalanceResponse'
+  /assetlink:
+    post:
+      tags:
+        - RGB
+      summary: Create a contract link
+      description: Link a parent IFA contract to a child IFA contract using a link-right UTXO
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AssetLinkRequest'
+      responses:
+        '200':
+          description: Successful operation
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AssetLinkResponse'
   /assetmetadata:
     post:
       tags:
@@ -1257,6 +1275,11 @@ paths:
                     description: >
                       True if the local wallet has changes since the last
                       successful upload (i.e. a manual backup is needed).
+                  last_auto_backup_error:
+                    type:
+                      - string
+                      - 'null'
+                    description: Most recent automatic VSS backup error, if any.
                   pending_kv_writes:
                     type: integer
                     description: >
@@ -1593,6 +1616,60 @@ components:
             - string
             - 'null'
           example: https://some.domain/someasset/rejectlist
+        issuance_link_right_outpoint:
+          oneOf:
+            - $ref: '#/components/schemas/Outpoint'
+            - type: 'null'
+        linked_from_asset_id:
+          type:
+            - string
+            - 'null'
+        linked_to_asset_id:
+          type:
+            - string
+            - 'null'
+    AssetLinkRequest:
+      type: object
+      required:
+        - parent_asset_id
+        - child_asset_id
+        - min_confirmations
+      properties:
+        parent_asset_id:
+          type: string
+          example: rgb:CJkb4YZw-jRiz2sk-~PARPio-wtVYI1c-XAEYCqO-wTfvRZ8
+        child_asset_id:
+          type: string
+          example: rgb:CJkb4YZw-jRiz2sk-~PARPio-wtVYI1c-XAEYCqO-wTfvRZ9
+        min_confirmations:
+          type: integer
+          example: 1
+    AssetLinkResponse:
+      type: object
+      required:
+        - parent_asset_id
+        - child_asset_id
+        - created_at
+        - txid
+      properties:
+        parent_asset_id:
+          type: string
+          example: rgb:CJkb4YZw-jRiz2sk-~PARPio-wtVYI1c-XAEYCqO-wTfvRZ8
+        child_asset_id:
+          type:
+            - string
+            - 'null'
+          example: rgb:CJkb4YZw-jRiz2sk-~PARPio-wtVYI1c-XAEYCqO-wTfvRZ9
+        created_at:
+          type:
+            - integer
+            - 'null'
+          example: 1691160565
+        txid:
+          type:
+            - string
+            - 'null'
+          example: 4b0d1f2c0d8a4e8d7e5e3f8f5a6b7c8d9e0f102132435465768798a9b0c1d2e3
     AssetMetadataRequest:
       type: object
       required:
@@ -1645,6 +1722,18 @@ components:
         token:
           oneOf:
             - $ref: '#/components/schemas/Token'
+            - type: 'null'
+        linked_from_asset_id:
+          type:
+            - string
+            - 'null'
+        linked_to_asset_id:
+          type:
+            - string
+            - 'null'
+        unspent_link_right_outpoint:
+          oneOf:
+            - $ref: '#/components/schemas/Outpoint'
             - type: 'null'
     AssetNIA:
       type: object
@@ -1815,6 +1904,19 @@ components:
         - Signet
         - SignetCustom
         - Regtest
+    Outpoint:
+      type: object
+      required:
+        - txid
+        - vout
+      properties:
+        txid:
+          type: string
+          example: 4b0d1f2c0d8a4e8d7e5e3f8f5a6b7c8d9e0f102132435465768798a9b0c1d2e3
+        vout:
+          type: integer
+          format: int32
+          example: 0
     BlockTime:
       type: object
       required:
@@ -2134,6 +2236,7 @@ components:
       type: object
       required:
         - recipient_id
+        - proxy_recipient_id
         - recipient_type
         - assignment
         - network
@@ -2142,6 +2245,9 @@ components:
         recipient_id:
           type: string
           example: bcrt:utxob:cbgHUJ4e-7QyKY4U-Jsj5AZw-oI0gxZh-7fxQY2_-tFFUAZN-4CgpX
+        proxy_recipient_id:
+          type: string
+          example: bcrt:utxob:cbgHUJ4e-7QyKY4U-Jsj5AZw-oI0gxZh-7fxQY2_-tFFUAZN-4CgpY
         recipient_type:
           $ref: '#/components/schemas/RecipientType'
         asset_schema:
@@ -2499,6 +2605,10 @@ components:
             - string
             - 'null'
           example: https://some.domain/someasset/rejectlist
+        issuance_type:
+          oneOf:
+            - $ref: '#/components/schemas/IfaIssuanceType'
+            - type: 'null'
     IssueAssetIFAResponse:
       type: object
       required:
@@ -2506,6 +2616,33 @@ components:
       properties:
         asset:
           $ref: '#/components/schemas/AssetIFA'
+    IfaIssuanceType:
+      oneOf:
+        - $ref: '#/components/schemas/IfaIssuanceTypeLegacy'
+        - $ref: '#/components/schemas/IfaIssuanceTypeLinkRightOnly'
+        - $ref: '#/components/schemas/IfaIssuanceTypeLinkedFromParent'
+    IfaIssuanceTypeLegacy:
+      type: string
+      enum: [legacy]
+    IfaIssuanceTypeLinkRightOnly:
+      type: string
+      enum: [linkRightOnly]
+    IfaIssuanceTypeLinkedFromParent:
+      type: object
+      required:
+        - linkedFromParent
+      properties:
+        linkedFromParent:
+          type: object
+          required:
+            - contractId
+          properties:
+            contractId:
+              type: string
+              example: rgb:CJkb4YZw-jRiz2sk-~PARPio-wtVYI1c-XAEYCqO-wTfvRZ8
+            requestLinkRight:
+              type: boolean
+              example: true
     IssueAssetNIARequest:
       type: object
       required:
@@ -3833,6 +3970,11 @@ components:
             - string
             - 'null'
           example: 61qsVbWtkNmU54F2i6qtB9uSmEGsPoaeypCi5uC5uctZ
+        proxy_recipient_id:
+          type:
+            - string
+            - 'null'
+          example: 61qsVbWtkNmU54F2i6qtB9uSmEGsPoaeypCi5uC5ucX
         receive_utxo:
           type:
             - string

@@ -1,9 +1,14 @@
-use crate::async_order::{
-    AsyncOrderAccessControl, AsyncOrderInvoiceProvider, AsyncOrderMessageHandler,
-    AsyncOrderOutboundInvoiceResultWire, AsyncOrderRequestInvoiceParamsWire,
-    AsyncPaymentsPreimageRoot, JsonRpcErrorWire, ASYNC_ERROR_INVOICE_HASH_MISMATCH,
-    ASYNC_ERROR_STALE_FLOW,
+use crate::asset_link::{
+    AssetLinkAuthorizeParamsWire, AssetLinkAuthorizer, AssetLinkMessageHandler,
+    ASSET_LINK_ERROR_DUPLICATE_PAYMENT_HASH, ASSET_LINK_ERROR_INSUFFICIENT_LIQUIDITY,
+    ASSET_LINK_ERROR_UNKNOWN_ASSET, ASSET_LINK_ERROR_UNKNOWN_LINK,
 };
+use crate::async_order::{
+    AsyncOrderInvoiceProvider, AsyncOrderMessageHandler, AsyncOrderOutboundInvoiceResultWire,
+    AsyncOrderRequestInvoiceParamsWire, AsyncPaymentsPreimageRoot,
+    ASYNC_ERROR_INVOICE_HASH_MISMATCH, ASYNC_ERROR_STALE_FLOW,
+};
+use crate::custom_msg_rpc::{CustomMessenger, CustomMsgPeerAccessControl, JsonRpcErrorWire};
 use crate::synced_kv_store::SyncedKvStore;
 use amplify::{map, s};
 use bitcoin::blockdata::locktime::absolute::LockTime;
@@ -96,7 +101,7 @@ use rgb_lib::{
         Wallet as RgbLibWallet, WalletData, WitnessData,
     },
     AssetSchema, Assignment, BitcoinNetwork, ConsignmentExt, ContractId, Error as RgbLibError,
-    Fascia, FileContent, RgbTransfer, RgbTxid, WitnessOrd,
+    Fascia, FileContent, RgbTransfer, RgbTxid, TransferStatus, WitnessOrd,
 };
 use std::collections::HashMap;
 #[cfg(feature = "vss")]
@@ -109,7 +114,7 @@ use std::net::{SocketAddr, TcpListener};
 use std::path::PathBuf;
 use std::str::FromStr;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex, MutexGuard, RwLock};
+use std::sync::{Arc, Mutex, MutexGuard, RwLock, Weak};
 use std::time::{Duration, SystemTime};
 use time::OffsetDateTime;
 use tokio::runtime::Handle;
@@ -120,7 +125,9 @@ use tokio::task::JoinHandle;
 use crate::async_kv_store::RemoteFirstKvStore;
 use crate::bitcoind::BitcoindClient;
 use crate::chain_backend::ChainBackend;
-use crate::core_types::{HTLCStatus, NodeKeySource, SwapStatus, UnlockRequest};
+use crate::core_types::{
+    HTLCStatus, NodeKeySource, SwapStatus, UnlockRequest, PENDING_SWAP_TIMEOUT_SECS,
+};
 use crate::database::RlnDatabase;
 use crate::disk::{self, FilesystemLogger};
 use crate::gossip::{GossipSource, GossipSourceConfig};
@@ -131,6 +138,7 @@ const OUTBOUND_PAYMENTS_KEY: &str = "outbound_payments";
 const CHANNEL_IDS_KEY: &str = "channel_ids";
 const MAKER_SWAPS_KEY: &str = "maker_swaps";
 const TAKER_SWAPS_KEY: &str = "taker_swaps";
+const ASSET_LINK_SWAP_AUTHORIZATION_MAX_EXPIRY_SECS: u64 = 24 * 60 * 60;
 const OUTPUT_SPENDER_TXES_KEY: &str = "output_spender_txes";
 const PSBT_NAMESPACE: &str = "psbt";
 const PENDING_FUNDING_NAMESPACE: &str = "pending_funding";
@@ -156,11 +164,12 @@ use crate::signer::{
     ActiveSignerRef, DynRlnChannelSigner, DynRlnSigner, LightningEntropySource, RlnKeysInterface,
     SystemEntropySource,
 };
-use crate::swap::SwapData;
+use crate::swap::{SwapData, SwapInfo};
 use crate::utils::{
-    check_port_is_available, connect_peer_if_necessary, do_connect_peer, get_current_timestamp,
-    hex_str, validate_and_parse_payment_hash, validate_and_parse_payment_preimage, AppState,
-    StaticState, UnlockedAppState, ELECTRUM_URL_MAINNET, ELECTRUM_URL_REGTEST, ELECTRUM_URL_SIGNET,
+    check_port_is_available, connect_peer_if_necessary, description_hash_from_invoice,
+    do_connect_peer, get_current_timestamp, get_max_local_rgb_amount, hex_str,
+    validate_and_parse_payment_hash, validate_and_parse_payment_preimage, AppState, StaticState,
+    UnlockedAppState, ELECTRUM_URL_MAINNET, ELECTRUM_URL_REGTEST, ELECTRUM_URL_SIGNET,
     ELECTRUM_URL_TESTNET, ELECTRUM_URL_TESTNET4, PROXY_ENDPOINT_LOCAL, PROXY_ENDPOINT_PUBLIC,
 };
 
@@ -450,12 +459,26 @@ impl UnlockedAppState {
         self.save_taker_swaps(taker_swaps);
     }
 
+    pub(crate) fn update_taker_swap_pending_intercept(
+        &self,
+        payment_hash: &PaymentHash,
+        intercept_id: channelmanager::InterceptId,
+    ) {
+        let mut taker_swaps = self.get_taker_swaps();
+        let taker_swap = taker_swaps.swaps.get_mut(payment_hash).unwrap();
+        taker_swap.status = SwapStatus::Pending;
+        taker_swap.initiated_at = Some(get_current_timestamp());
+        taker_swap.pending_intercept_id = Some(intercept_id);
+        self.save_taker_swaps(taker_swaps);
+    }
+
     pub(crate) fn update_taker_swap_status(&self, payment_hash: &PaymentHash, status: SwapStatus) {
         let mut taker_swaps = self.get_taker_swaps();
         let taker_swap = taker_swaps.swaps.get_mut(payment_hash).unwrap();
         match &status {
             SwapStatus::Succeeded | SwapStatus::Failed | SwapStatus::Expired => {
-                taker_swap.completed_at = Some(get_current_timestamp())
+                taker_swap.completed_at = Some(get_current_timestamp());
+                taker_swap.pending_intercept_id = None;
             }
             SwapStatus::Pending => taker_swap.initiated_at = Some(get_current_timestamp()),
             SwapStatus::Waiting => panic!("this doesn't make sense: swap starts in Waiting status"),
@@ -1051,7 +1074,7 @@ pub(crate) type PeerManager = LdkPeerManager<
     Arc<RoutingMessageHandler>,
     Arc<OnionMessenger>,
     Arc<FilesystemLogger>,
-    Arc<AsyncOrderMessageHandler>,
+    Arc<CustomMessenger>,
     ActiveSignerRef,
     Arc<ChainMonitor>,
 >;
@@ -1187,9 +1210,186 @@ impl LiveChannelAccess {
     }
 }
 
-impl AsyncOrderAccessControl for LiveChannelAccess {
+impl CustomMsgPeerAccessControl for LiveChannelAccess {
     fn allows_peer(&self, peer: &PublicKey) -> bool {
         self.lookup.peer_has_live_channel(peer)
+    }
+}
+
+struct NodeAssetLinkAuthorizer {
+    unlocked_state_weak: Weak<UnlockedAppState>,
+    channel_manager: Arc<ChannelManager>,
+    kv_store: Arc<SyncedKvStore>,
+    taker_swaps: Arc<Mutex<SwapMap>>,
+}
+
+fn reserved_outbound_rgb_amount(
+    taker_swaps: &SwapMap,
+    outbound_contract_id: ContractId,
+    current_time: u64,
+) -> u64 {
+    taker_swaps
+        .swaps
+        .values()
+        .filter(|swap| {
+            if swap.swap_info.from_asset != Some(outbound_contract_id) {
+                return false;
+            }
+
+            match swap.status {
+                SwapStatus::Waiting => current_time <= swap.swap_info.expiry,
+                SwapStatus::Pending => swap.initiated_at.is_none_or(|initiated_at| {
+                    current_time <= initiated_at.saturating_add(PENDING_SWAP_TIMEOUT_SECS)
+                }),
+                SwapStatus::Succeeded | SwapStatus::Expired | SwapStatus::Failed => false,
+            }
+        })
+        .fold(0, |reserved_amount, swap| {
+            reserved_amount.saturating_add(swap.swap_info.qty_from)
+        })
+}
+
+impl AssetLinkAuthorizer for NodeAssetLinkAuthorizer {
+    fn authorize_swap(
+        &self,
+        sender_node_id: PublicKey,
+        params: &AssetLinkAuthorizeParamsWire,
+    ) -> Result<(), JsonRpcErrorWire> {
+        let payment_hash = validate_and_parse_payment_hash(&params.payment_hash)
+            .map_err(|_| JsonRpcErrorWire::invalid_params("invalid_payment_hash"))?;
+        let asset_contract_id = ContractId::from_str(&params.asset_id)
+            .map_err(|_| JsonRpcErrorWire::invalid_params("invalid_asset_id"))?;
+        let linked_contract_id = ContractId::from_str(&params.linked_asset_id)
+            .map_err(|_| JsonRpcErrorWire::invalid_params("invalid_linked_asset_id"))?;
+        if params.amount == 0 {
+            return Err(JsonRpcErrorWire::invalid_params("invalid_amount"));
+        }
+        if params.expiry_sec == 0 {
+            return Err(JsonRpcErrorWire::invalid_params("invalid_expiry_sec"));
+        }
+
+        let unlocked_state = self.unlocked_state_weak.upgrade().ok_or_else(|| {
+            JsonRpcErrorWire::internal_error("asset_link_state_unavailable".to_owned())
+        })?;
+        let asset_metadata = unlocked_state
+            .rgb_get_asset_metadata(asset_contract_id)
+            .map_err(|_| {
+                JsonRpcErrorWire::application_error(ASSET_LINK_ERROR_UNKNOWN_ASSET, "unknown_link")
+            })?;
+        let linked_asset_metadata = unlocked_state
+            .rgb_get_asset_metadata(linked_contract_id)
+            .map_err(|_| {
+                JsonRpcErrorWire::application_error(ASSET_LINK_ERROR_UNKNOWN_ASSET, "unknown_link")
+            })?;
+
+        let asset_is_parent_of_linked_asset = asset_metadata.linked_to_asset_id.as_deref()
+            == Some(params.linked_asset_id.as_str())
+            && linked_asset_metadata.linked_from_asset_id.as_deref()
+                == Some(params.asset_id.as_str());
+
+        let linked_asset_is_parent_of_asset = linked_asset_metadata.linked_to_asset_id.as_deref()
+            == Some(params.asset_id.as_str())
+            && asset_metadata.linked_from_asset_id.as_deref()
+                == Some(params.linked_asset_id.as_str());
+
+        let parent_contract_id = if asset_is_parent_of_linked_asset {
+            Some(asset_contract_id)
+        } else if linked_asset_is_parent_of_asset {
+            Some(linked_contract_id)
+        } else {
+            None
+        };
+
+        let Some(parent_contract_id) = parent_contract_id else {
+            return Err(JsonRpcErrorWire::application_error(
+                ASSET_LINK_ERROR_UNKNOWN_LINK,
+                "unknown_link",
+            ));
+        };
+
+        if asset_metadata.asset_schema != AssetSchema::Ifa
+            || linked_asset_metadata.asset_schema != AssetSchema::Ifa
+        {
+            return Err(JsonRpcErrorWire::application_error(
+                ASSET_LINK_ERROR_UNKNOWN_LINK,
+                "unknown_link",
+            ));
+        }
+
+        let link_is_settled = unlocked_state
+            .rgb_find_link_transfer(parent_contract_id)
+            .map_err(|_| {
+                JsonRpcErrorWire::application_error(ASSET_LINK_ERROR_UNKNOWN_LINK, "unknown_link")
+            })?
+            .is_some_and(|transfer| transfer.status == TransferStatus::Settled);
+        if !link_is_settled {
+            return Err(JsonRpcErrorWire::application_error(
+                ASSET_LINK_ERROR_UNKNOWN_LINK,
+                "unknown_link",
+            ));
+        }
+
+        let max_balance = get_max_local_rgb_amount(
+            asset_contract_id,
+            self.channel_manager.list_channels().iter(),
+            self.kv_store.as_ref(),
+        );
+        let mut taker_swaps = self.taker_swaps.lock().unwrap();
+        if taker_swaps.swaps.contains_key(&payment_hash) {
+            return Err(JsonRpcErrorWire::application_error(
+                ASSET_LINK_ERROR_DUPLICATE_PAYMENT_HASH,
+                "duplicate_payment_hash",
+            ));
+        }
+
+        let authorization_time = get_current_timestamp();
+        let reserved_amount =
+            reserved_outbound_rgb_amount(&taker_swaps, asset_contract_id, authorization_time);
+        let available_amount = max_balance.saturating_sub(reserved_amount);
+        if params.amount > available_amount {
+            return Err(JsonRpcErrorWire::application_error(
+                ASSET_LINK_ERROR_INSUFFICIENT_LIQUIDITY,
+                "insufficient_liquidity",
+            ));
+        }
+
+        let expiry_sec = params
+            .expiry_sec
+            .min(ASSET_LINK_SWAP_AUTHORIZATION_MAX_EXPIRY_SECS);
+        let one_to_one_redemption_amount = params.amount;
+        let swap_info = SwapInfo {
+            qty_from: one_to_one_redemption_amount,
+            qty_to: one_to_one_redemption_amount,
+            from_asset: Some(asset_contract_id),
+            to_asset: Some(linked_contract_id),
+            expiry: authorization_time.saturating_add(expiry_sec),
+        };
+        assert_eq!(
+            swap_info.qty_from, swap_info.qty_to,
+            "linked-asset redemption must remain 1:1"
+        );
+        let mut swap_data = SwapData::create_from_swap_info(&swap_info);
+        swap_data.authorized_peer = Some(sender_node_id);
+        taker_swaps.swaps.insert(payment_hash, swap_data);
+        if let Err(e) = self
+            .kv_store
+            .write("", "", TAKER_SWAPS_KEY, taker_swaps.encode())
+        {
+            taker_swaps.swaps.remove(&payment_hash);
+            return Err(JsonRpcErrorWire::internal_error(format!(
+                "taker_swaps_write_failed: {e}"
+            )));
+        }
+
+        tracing::info!(
+            peer = %sender_node_id,
+            payment_hash = %hex_str(&payment_hash.0),
+            asset_id = %params.asset_id,
+            linked_asset_id = %params.linked_asset_id,
+            amount = params.amount,
+            "authorized linked-asset payment"
+        );
+        Ok(())
     }
 }
 
@@ -1359,7 +1559,7 @@ impl AsyncOrderInvoiceProvider for AsyncOrderRecipientInvoiceProvider {
                 invoice_type: Some(InvoiceType::Hodl {
                     async_payment_recipient: true,
                 }),
-                description_hash: crate::routes::description_hash_from_invoice(&invoice),
+                description_hash: description_hash_from_invoice(&invoice),
                 payment_idx: None,
                 async_hash_index: self.external_signer_mode.then_some(hash_index),
                 async_host_node_id: self.external_signer_mode.then_some(sender_node_id),
@@ -1762,7 +1962,7 @@ async fn handle_ldk_events(
                         &temporary_channel_id,
                         unlocked_state.kv_store.as_ref(),
                     );
-                    let channel_rgb_amount = rgb_info.local_rgb_amount;
+                    let channel_rgb_amount = rgb_info.local_rgb_amount + rgb_info.remote_rgb_amount;
                     let asset_id = rgb_info.contract_id.to_string();
                     let assignment = match rgb_info.schema {
                         AssetSchema::Nia | AssetSchema::Cfa | AssetSchema::Ifa => {
@@ -3046,12 +3246,18 @@ async fn handle_ldk_events(
             requested_next_hop_scid,
             prev_outbound_scid_alias,
         } => {
-            if !is_swap {
-                tracing::warn!("Intercepted an HTLC that's not related to a swap");
-                unlocked_state
+            let reject_intercept = |reason: &str| {
+                if let Err(e) = unlocked_state
                     .channel_manager
                     .fail_intercepted_htlc(intercept_id)
-                    .unwrap();
+                {
+                    tracing::debug!("could not fail intercepted HTLC ({reason}): {e:?}");
+                }
+            };
+
+            if !is_swap {
+                tracing::warn!("Intercepted an HTLC that's not related to a swap");
+                reject_intercept("not a swap");
                 return Ok(());
             }
 
@@ -3066,55 +3272,109 @@ async fn handle_ldk_events(
                     })
             };
 
-            let inbound_channel = unlocked_state
+            let Some(inbound_channel) = unlocked_state
                 .channel_manager
                 .list_channels()
                 .into_iter()
                 .find(|details| details.outbound_scid_alias == Some(prev_outbound_scid_alias))
-                .expect("Should always be a valid channel");
-            let outbound_channel = unlocked_state
+            else {
+                tracing::error!(
+                    "ERROR: no inbound channel matches the intercepted HTLC prev scid alias {prev_outbound_scid_alias}, rejecting it"
+                );
+                reject_intercept("no inbound channel");
+                return Ok(());
+            };
+            let Some(outbound_channel) = unlocked_state
                 .channel_manager
                 .list_channels()
                 .into_iter()
-                .find(|details| details.short_channel_id == Some(requested_next_hop_scid))
-                .expect("Should always be a valid channel");
+                .find(|details| {
+                    details.short_channel_id == Some(requested_next_hop_scid)
+                        || details.outbound_scid_alias == Some(requested_next_hop_scid)
+                })
+            else {
+                tracing::error!(
+                    "ERROR: no outbound channel matches the intercepted HTLC next hop scid {requested_next_hop_scid}, rejecting it"
+                );
+                reject_intercept("no outbound channel");
+                return Ok(());
+            };
 
             let inbound_rgb_info = get_rgb_info(&inbound_channel.channel_id);
             let outbound_rgb_info = get_rgb_info(&outbound_channel.channel_id);
 
             tracing::debug!("EVENT: Requested swap with params inbound_msat={} outbound_msat={} inbound_rgb={:?} outbound_rgb={:?} inbound_contract_id={:?}, outbound_contract_id={:?}", inbound_amount_msat, expected_outbound_amount_msat, inbound_rgb_amount, expected_outbound_rgb_payment.map(|(_, a)| a), inbound_rgb_info.map(|i| i.0), expected_outbound_rgb_payment.map(|(c, _)| c));
 
-            let swaps_lock = unlocked_state.taker_swaps.lock().unwrap();
-            let whitelist_swap = match swaps_lock.swaps.get(&payment_hash) {
-                None => {
-                    tracing::error!("ERROR: rejecting non-whitelisted swap");
-                    unlocked_state
-                        .channel_manager
-                        .fail_intercepted_htlc(intercept_id)
-                        .unwrap();
-                    return Ok(());
+            let (whitelist_swap_info, whitelist_swap_status, pending_intercept_id, authorized_peer) = {
+                let swaps_lock = unlocked_state.taker_swaps.lock().unwrap();
+                match swaps_lock.swaps.get(&payment_hash) {
+                    None => {
+                        tracing::error!("ERROR: rejecting non-whitelisted swap");
+                        reject_intercept("non-whitelisted swap");
+                        return Ok(());
+                    }
+                    Some(x) => (
+                        x.swap_info.clone(),
+                        x.status,
+                        x.pending_intercept_id,
+                        x.authorized_peer,
+                    ),
                 }
-                Some(x) => x,
             };
 
+            match whitelist_swap_status {
+                SwapStatus::Waiting => {}
+                SwapStatus::Pending if pending_intercept_id == Some(intercept_id) => {}
+                _ => {
+                    tracing::error!(
+                        "ERROR: swap whitelist entry is not in a forwardable state (status {whitelist_swap_status:?}), rejecting it"
+                    );
+                    reject_intercept(&format!(
+                        "whitelist entry not forwardable (status {whitelist_swap_status:?})"
+                    ));
+                    return Ok(());
+                }
+            }
+
+            if let Some(authorized_peer) = authorized_peer {
+                if inbound_channel.counterparty.node_id != authorized_peer {
+                    tracing::error!(
+                        "ERROR: swap whitelist entry was authorized for peer {}, but intercepted HTLC came from {}, rejecting it",
+                        authorized_peer,
+                        inbound_channel.counterparty.node_id
+                    );
+                    reject_intercept("unauthorized peer");
+                    return Ok(());
+                }
+            }
+
+            if get_current_timestamp() > whitelist_swap_info.expiry {
+                tracing::error!("ERROR: swap whitelist entry expired, rejecting it");
+                unlocked_state.update_taker_swap_status(&payment_hash, SwapStatus::Expired);
+                reject_intercept("whitelist entry expired");
+                return Ok(());
+            }
+
             let mut fail = false;
-            if whitelist_swap.swap_info.is_from_btc() {
+            if whitelist_swap_info.is_from_btc() {
                 let net_msat_diff = expected_outbound_amount_msat.checked_sub(inbound_amount_msat);
 
-                if inbound_rgb_amount != Some(whitelist_swap.swap_info.qty_to)
-                    || inbound_rgb_info.map(|x| x.0) != whitelist_swap.swap_info.to_asset
-                    || net_msat_diff != Some(whitelist_swap.swap_info.qty_from)
+                if inbound_rgb_amount != Some(whitelist_swap_info.qty_to)
+                    || inbound_rgb_info.map(|x| x.0) != whitelist_swap_info.to_asset
+                    || net_msat_diff != Some(whitelist_swap_info.qty_from)
                 {
                     fail = true;
                 }
-            } else if whitelist_swap.swap_info.is_to_btc() {
+            } else if whitelist_swap_info.is_to_btc() {
                 let net_msat_diff =
                     inbound_amount_msat.saturating_sub(expected_outbound_amount_msat);
 
-                if expected_outbound_rgb_payment.map(|(_, a)| a)
-                    != Some(whitelist_swap.swap_info.qty_from)
-                    || outbound_rgb_info.map(|x| x.0) != whitelist_swap.swap_info.from_asset
-                    || net_msat_diff != whitelist_swap.swap_info.qty_to
+                if expected_outbound_rgb_payment
+                    != whitelist_swap_info
+                        .from_asset
+                        .map(|asset| (asset, whitelist_swap_info.qty_from))
+                    || outbound_rgb_info.map(|x| x.0) != whitelist_swap_info.from_asset
+                    || net_msat_diff != whitelist_swap_info.qty_to
                 {
                     fail = true;
                 }
@@ -3122,41 +3382,39 @@ async fn handle_ldk_events(
                 let net_msat_diff = inbound_amount_msat.checked_sub(expected_outbound_amount_msat);
 
                 if net_msat_diff != Some(0)
-                    || expected_outbound_rgb_payment.map(|(_, a)| a)
-                        != Some(whitelist_swap.swap_info.qty_from)
-                    || outbound_rgb_info.map(|x| x.0) != whitelist_swap.swap_info.from_asset
-                    || inbound_rgb_amount != Some(whitelist_swap.swap_info.qty_to)
-                    || inbound_rgb_info.map(|x| x.0) != whitelist_swap.swap_info.to_asset
+                    || expected_outbound_rgb_payment
+                        != whitelist_swap_info
+                            .from_asset
+                            .map(|asset| (asset, whitelist_swap_info.qty_from))
+                    || outbound_rgb_info.map(|x| x.0) != whitelist_swap_info.from_asset
+                    || inbound_rgb_amount != Some(whitelist_swap_info.qty_to)
+                    || inbound_rgb_info.map(|x| x.0) != whitelist_swap_info.to_asset
                 {
                     fail = true;
                 }
             }
 
-            drop(swaps_lock);
-
             if fail {
                 tracing::error!("ERROR: swap doesn't match the whitelisted info, rejecting it");
                 unlocked_state.update_taker_swap_status(&payment_hash, SwapStatus::Failed);
-                unlocked_state
-                    .channel_manager
-                    .fail_intercepted_htlc(intercept_id)
-                    .unwrap();
+                reject_intercept("whitelist mismatch");
                 return Ok(());
             }
 
             tracing::debug!("Swap is whitelisted, forwarding the htlc...");
-            unlocked_state.update_taker_swap_status(&payment_hash, SwapStatus::Pending);
+            unlocked_state.update_taker_swap_pending_intercept(&payment_hash, intercept_id);
 
-            unlocked_state
-                .channel_manager
-                .forward_intercepted_htlc(
-                    intercept_id,
-                    channelmanager::NextHopForward::ShortChannelId(requested_next_hop_scid),
-                    outbound_channel.counterparty.node_id,
-                    expected_outbound_amount_msat,
-                    expected_outbound_rgb_payment,
-                )
-                .expect("Forward should be valid");
+            if let Err(e) = unlocked_state.channel_manager.forward_intercepted_htlc(
+                intercept_id,
+                channelmanager::NextHopForward::ShortChannelId(requested_next_hop_scid),
+                outbound_channel.counterparty.node_id,
+                expected_outbound_amount_msat,
+                expected_outbound_rgb_payment,
+            ) {
+                tracing::error!("ERROR: failed to forward whitelisted swap HTLC: {e:?}");
+                unlocked_state.update_taker_swap_status(&payment_hash, SwapStatus::Failed);
+                reject_intercept("forward failed");
+            }
         }
         Event::OnionMessageIntercepted { .. } => {
             // We don't use the onion message interception feature, so this event should never be
@@ -4909,14 +5167,19 @@ pub(crate) async fn start_ldk(
     let live_channel_access = Arc::new(LiveChannelAccess::new(channel_manager.clone()));
     let async_order_handler = match static_state.lsp_base_url.as_ref() {
         Some(lsp_base_url) => Arc::new(AsyncOrderMessageHandler::new_with_lsp_client(
-            live_channel_access,
+            live_channel_access.clone(),
             lsp_base_url.clone(),
             static_state.lsp_bearer_token.clone(),
             Handle::current(),
             static_state.config.lsp.request_timeout_secs,
         )),
-        None => Arc::new(AsyncOrderMessageHandler::new(live_channel_access)),
+        None => Arc::new(AsyncOrderMessageHandler::new(live_channel_access.clone())),
     };
+    let asset_link_handler = Arc::new(AssetLinkMessageHandler::new(live_channel_access));
+    let custom_messenger = Arc::new(CustomMessenger {
+        async_order: Arc::clone(&async_order_handler),
+        asset_link: Arc::clone(&asset_link_handler),
+    });
     let async_payments_preimage_root = Arc::new(
         match internal_mnemonic.as_ref() {
             Some(mnemonic) => AsyncPaymentsPreimageRoot::build_from_mnemonic(
@@ -4943,7 +5206,7 @@ pub(crate) async fn start_ldk(
         chan_handler: channel_manager.clone(),
         route_handler: Arc::clone(&route_handler),
         onion_message_handler: onion_messenger.clone(),
-        custom_message_handler: Arc::clone(&async_order_handler),
+        custom_message_handler: Arc::clone(&custom_messenger),
         send_only_message_handler: Arc::clone(&chain_monitor),
     };
     let peer_manager: Arc<PeerManager> = Arc::new(PeerManager::new(
@@ -5274,6 +5537,7 @@ pub(crate) async fn start_ldk(
         outbound_payments,
         peer_manager: Arc::clone(&peer_manager),
         async_order_handler,
+        asset_link_handler: Arc::clone(&asset_link_handler),
         async_payments_preimage_root,
         kv_store: Arc::clone(&kv_store),
         #[cfg(feature = "vss")]
@@ -5281,7 +5545,7 @@ pub(crate) async fn start_ldk(
         bump_tx_event_handler,
         rgb_wallet_wrapper,
         maker_swaps,
-        taker_swaps,
+        taker_swaps: Arc::clone(&taker_swaps),
         router: Arc::clone(&router),
         output_sweeper: Arc::clone(&output_sweeper),
         channel_ids_map,
@@ -5293,6 +5557,13 @@ pub(crate) async fn start_ldk(
         virtual_channel_session_store,
         next_payment_idx,
     });
+
+    asset_link_handler.set_authorizer(Arc::new(NodeAssetLinkAuthorizer {
+        unlocked_state_weak: Arc::downgrade(&unlocked_state),
+        channel_manager: Arc::clone(&channel_manager),
+        kv_store: Arc::clone(&kv_store),
+        taker_swaps: Arc::clone(&taker_swaps),
+    }));
 
     // Refresh the RGS snapshot on a fixed interval (RGS mode only). The first
     // tick fires immediately, so a freshly unlocked node syncs right away.

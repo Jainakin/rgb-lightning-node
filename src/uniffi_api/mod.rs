@@ -4,6 +4,7 @@ pub(crate) mod state;
 mod types;
 
 use crate::async_order::AsyncOrderNewHashWire;
+use crate::core_types::asset_link::{AssetLinkRequest, AssetLinkResponse};
 use crate::core_types::async_order::{AsyncOrderNewRequest, AsyncOrderNewResponse};
 use crate::sdk;
 use crate::{NodeConfig, NodeHandle};
@@ -256,11 +257,49 @@ fn map_asset_balance(data: crate::sdk::AssetBalance) -> AssetBalanceInfo {
     }
 }
 
+fn map_asset_link(data: AssetLinkResponse) -> Result<AssetLinkRecord, RlnError> {
+    Ok(AssetLinkRecord {
+        parent_asset_id: ContractId::from_str(&data.parent_asset_id).map_err(RlnError::internal)?,
+        child_asset_id: data
+            .child_asset_id
+            .map(|asset_id| ContractId::from_str(&asset_id).map_err(RlnError::internal))
+            .transpose()?,
+        created_at: data.created_at,
+        txid: data
+            .txid
+            .map(|txid| Txid::from_str(&txid).map_err(RlnError::internal))
+            .transpose()?,
+    })
+}
+
 fn map_media(data: crate::sdk::Media) -> Media {
     Media {
         file_path: data.file_path,
         digest: data.digest,
         mime: data.mime,
+    }
+}
+
+fn map_ifa_issuance_type(
+    issuance_type: IfaIssuanceType,
+) -> Result<rgb_lib::wallet::IfaIssuanceType, RlnError> {
+    Ok(match issuance_type {
+        IfaIssuanceType::Legacy => rgb_lib::wallet::IfaIssuanceType::Legacy,
+        IfaIssuanceType::LinkRightOnly => rgb_lib::wallet::IfaIssuanceType::LinkRightOnly,
+        IfaIssuanceType::LinkedFromParent {
+            contract_id,
+            request_link_right,
+        } => rgb_lib::wallet::IfaIssuanceType::LinkedFromParent {
+            contract_id: contract_id.to_string(),
+            request_link_right,
+        },
+    })
+}
+
+fn map_rgb_outpoint(outpoint: rgb_lib::wallet::Outpoint) -> RgbOutpoint {
+    RgbOutpoint {
+        txid: outpoint.txid,
+        vout: outpoint.vout,
     }
 }
 
@@ -331,6 +370,7 @@ fn map_transfer(t: crate::sdk::TransferData) -> Result<Transfer, RlnError> {
         kind: format!("{:?}", t.kind),
         txid,
         recipient_id: t.recipient_id,
+        proxy_recipient_id: t.proxy_recipient_id,
         receive_utxo: t.receive_utxo,
         change_utxo: t.change_utxo,
         expiration: t.expiration,
@@ -514,6 +554,10 @@ impl SdkNode {
 
     pub fn issueassetifa(&self, request: SdkIssueAssetIfaRequest) -> Result<AssetIfa, RlnError> {
         let state = self.handle.app_state();
+        let issuance_type = request
+            .issuance_type
+            .map(map_ifa_issuance_type)
+            .transpose()?;
         let asset = block_on_sdk(sdk::issue_asset_ifa(
             state,
             sdk::IssueAssetIFARequestData {
@@ -523,6 +567,7 @@ impl SdkNode {
                 name: request.name,
                 precision: request.precision,
                 reject_list_url: request.reject_list_url,
+                issuance_type,
             },
         ))?;
 
@@ -540,6 +585,9 @@ impl SdkNode {
             balance: map_asset_balance(asset.balance),
             media: asset.media.map(map_media),
             reject_list_url: asset.reject_list_url,
+            issuance_link_right_outpoint: asset.issuance_link_right_outpoint.map(map_rgb_outpoint),
+            linked_from_asset_id: asset.linked_from_asset_id,
+            linked_to_asset_id: asset.linked_to_asset_id,
         })
     }
 
@@ -584,6 +632,19 @@ impl SdkNode {
                 reserves: t.reserves,
             }),
         })
+    }
+
+    pub fn asset_link(&self, request: SdkAssetLinkRequest) -> Result<AssetLinkRecord, RlnError> {
+        let state = self.handle.app_state();
+        let asset_link = block_on_sdk(sdk::asset_link(
+            state,
+            AssetLinkRequest {
+                parent_asset_id: request.parent_asset_id.to_string(),
+                child_asset_id: request.child_asset_id.to_string(),
+                min_confirmations: request.min_confirmations,
+            },
+        ))?;
+        map_asset_link(asset_link)
     }
 
     pub fn postassetmedia(
@@ -1126,6 +1187,9 @@ impl SdkNode {
             ticker: resp.ticker,
             details: resp.details,
             token: resp.token.map(map_token),
+            unspent_link_right_outpoint: resp.unspent_link_right_outpoint.map(map_rgb_outpoint),
+            linked_from_asset_id: resp.linked_from_asset_id,
+            linked_to_asset_id: resp.linked_to_asset_id,
         })
     }
 
@@ -1255,6 +1319,11 @@ impl SdkNode {
                             balance: map_asset_balance(a.balance),
                             media: a.media.map(map_media),
                             reject_list_url: a.reject_list_url,
+                            issuance_link_right_outpoint: a
+                                .issuance_link_right_outpoint
+                                .map(map_rgb_outpoint),
+                            linked_from_asset_id: a.linked_from_asset_id,
+                            linked_to_asset_id: a.linked_to_asset_id,
                         })
                     })
                     .collect::<Result<Vec<_>, RlnError>>()
@@ -1306,6 +1375,7 @@ impl SdkNode {
             .transpose()?;
         Ok(DecodeRgbInvoiceResponse {
             recipient_id: resp.recipient_id,
+            proxy_recipient_id: resp.proxy_recipient_id,
             recipient_type: format!("{:?}", resp.recipient_type),
             asset_schema: resp.asset_schema.map(|s| format!("{:?}", s)),
             asset_id,

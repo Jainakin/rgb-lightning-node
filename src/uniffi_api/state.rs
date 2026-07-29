@@ -184,6 +184,8 @@ pub(crate) fn map_api_error(err: APIError) -> RlnError {
         | APIError::InvalidBackupPath
         | APIError::InvalidBiscuitToken
         | APIError::InvalidChannelID
+        | APIError::InvalidContractLink(_)
+        | APIError::InvalidRightOutpoint(_)
         | APIError::InvalidDescriptionHash(_)
         | APIError::InvalidDetails(_)
         | APIError::InvalidEstimationBlocks
@@ -216,6 +218,7 @@ pub(crate) fn map_api_error(err: APIError) -> RlnError {
         | APIError::OutputBelowDustLimit
         | APIError::WrongPassword
         | APIError::UnsupportedBackupVersion { .. } => RlnError::InvalidRequest(msg),
+        APIError::RestoredBackupInconsistent(_) => RlnError::Internal(msg),
         APIError::Network(_) | APIError::NoValidTransportEndpoint => RlnError::Conflict(msg),
         APIError::ExternalSignerUnavailable(_) => RlnError::ExternalSignerUnavailable(msg),
         APIError::ExternalSignerProtocolError(_) => RlnError::ExternalSignerProtocolError(msg),

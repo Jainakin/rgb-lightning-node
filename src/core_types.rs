@@ -13,7 +13,27 @@ pub(crate) const DUST_LIMIT_MSAT: u64 = 546000;
 pub(crate) const HTLC_MIN_MSAT: u64 = 3_000_000;
 pub(crate) const VIRTUAL_HTLC_MIN_MSAT: u64 = 1_000;
 pub(crate) const MAX_SWAP_FEE_MSAT: u64 = 3_000_000;
+pub(crate) const PENDING_SWAP_TIMEOUT_SECS: u64 = 24 * 60 * 60;
 pub(crate) const DEFAULT_FINAL_CLTV_EXPIRY_DELTA: u32 = 14;
+
+pub mod asset_link {
+    use serde::{Deserialize, Serialize};
+
+    #[derive(Clone, Debug, Deserialize, Serialize)]
+    pub(crate) struct AssetLinkRequest {
+        pub(crate) parent_asset_id: String,
+        pub(crate) child_asset_id: String,
+        pub(crate) min_confirmations: u8,
+    }
+
+    #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+    pub(crate) struct AssetLinkResponse {
+        pub(crate) parent_asset_id: String,
+        pub(crate) child_asset_id: Option<String>,
+        pub(crate) created_at: Option<u64>,
+        pub(crate) txid: Option<String>,
+    }
+}
 
 pub mod async_order {
     use crate::async_order::{AsyncOrderNewHashWire, AsyncOrderRequestInvoiceParamsWire};

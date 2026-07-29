@@ -19,6 +19,7 @@ use lightning::{
     util::persist::KVStoreSync,
     util::ser::{Writeable, Writer},
 };
+use lightning_invoice::Bolt11Invoice;
 use magic_crypt::{new_magic_crypt, MagicCryptTrait};
 use rgb_lib::{bdk_wallet::keys::bip39::Mnemonic, BitcoinNetwork, ContractId};
 use rln_migration::{Migrator, MigratorTrait};
@@ -36,6 +37,7 @@ use std::{
 use tokio::sync::{Mutex as TokioMutex, MutexGuard as TokioMutexGuard};
 use tokio_util::sync::CancellationToken;
 
+use crate::asset_link::AssetLinkMessageHandler;
 use crate::async_order::{AsyncOrderMessageHandler, AsyncPaymentsPreimageRoot};
 use crate::ldk::{ChannelIdsMap, Router, VirtualChannelDraftStore, VirtualChannelSessionStore};
 use crate::rgb::{get_rgb_channel_info_optional, RgbLibWalletWrapper};
@@ -174,6 +176,7 @@ pub(crate) struct UnlockedAppState {
     pub(crate) onion_messenger: Arc<OnionMessenger>,
     pub(crate) outbound_payments: Arc<Mutex<OutboundPaymentInfoStorage>>,
     pub(crate) peer_manager: Arc<PeerManager>,
+    pub(crate) asset_link_handler: Arc<AssetLinkMessageHandler>,
     pub(crate) async_order_handler: Arc<AsyncOrderMessageHandler>,
     pub(crate) async_payments_preimage_root: Arc<AsyncPaymentsPreimageRoot>,
     pub(crate) kv_store: Arc<SyncedKvStore>,
@@ -546,6 +549,13 @@ pub(crate) async fn connect_peer_if_necessary(
     do_connect_peer(pubkey, address, peer_manager).await?;
     tracing::info!("connected to peer (pubkey: {pubkey}, addr: {address})");
     Ok(())
+}
+
+pub(crate) fn description_hash_from_invoice(invoice: &Bolt11Invoice) -> Option<[u8; 32]> {
+    match invoice.description() {
+        lightning_invoice::Bolt11InvoiceDescriptionRef::Hash(hash) => Some(hash.0.to_byte_array()),
+        _ => None,
+    }
 }
 
 pub(crate) async fn do_connect_peer(

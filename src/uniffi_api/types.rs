@@ -245,6 +245,13 @@ pub struct AssetBalanceInfo {
     pub offchain_inbound: u64,
 }
 
+pub struct AssetLinkRecord {
+    pub parent_asset_id: ContractId,
+    pub child_asset_id: Option<ContractId>,
+    pub created_at: Option<u64>,
+    pub txid: Option<Txid>,
+}
+
 pub struct AssetMetadataInfo {
     pub asset_schema: String,
     pub initial_supply: u64,
@@ -256,6 +263,9 @@ pub struct AssetMetadataInfo {
     pub ticker: Option<String>,
     pub details: Option<String>,
     pub token: Option<Token>,
+    pub unspent_link_right_outpoint: Option<RgbOutpoint>,
+    pub linked_from_asset_id: Option<String>,
+    pub linked_to_asset_id: Option<String>,
 }
 
 pub struct AssetMediaResponse {
@@ -356,6 +366,14 @@ pub struct AssetIfa {
     pub balance: AssetBalanceInfo,
     pub media: Option<Media>,
     pub reject_list_url: Option<String>,
+    pub issuance_link_right_outpoint: Option<RgbOutpoint>,
+    pub linked_from_asset_id: Option<String>,
+    pub linked_to_asset_id: Option<String>,
+}
+
+pub struct RgbOutpoint {
+    pub txid: String,
+    pub vout: u32,
 }
 
 pub struct ListAssetsResponse {
@@ -380,6 +398,7 @@ pub struct DecodeLnInvoiceResponse {
 
 pub struct DecodeRgbInvoiceResponse {
     pub recipient_id: String,
+    pub proxy_recipient_id: String,
     pub recipient_type: String,
     pub asset_schema: Option<String>,
     pub asset_id: Option<ContractId>,
@@ -415,6 +434,7 @@ pub struct Transfer {
     pub kind: String,
     pub txid: Option<Txid>,
     pub recipient_id: Option<String>,
+    pub proxy_recipient_id: Option<String>,
     pub receive_utxo: Option<String>,
     pub change_utxo: Option<String>,
     pub expiration: Option<i64>,
@@ -587,6 +607,22 @@ pub struct SdkIssueAssetIfaRequest {
     pub name: String,
     pub precision: u8,
     pub reject_list_url: Option<String>,
+    pub issuance_type: Option<IfaIssuanceType>,
+}
+
+pub enum IfaIssuanceType {
+    Legacy,
+    LinkRightOnly,
+    LinkedFromParent {
+        contract_id: ContractId,
+        request_link_right: bool,
+    },
+}
+
+pub struct SdkAssetLinkRequest {
+    pub parent_asset_id: ContractId,
+    pub child_asset_id: ContractId,
+    pub min_confirmations: u8,
 }
 
 pub struct SdkIssueAssetUdaRequest {

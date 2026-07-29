@@ -48,7 +48,8 @@ use rgb_lib::{
         },
         AssetCFA as RgbLibAssetCFA, AssetIFA as RgbLibAssetIFA, AssetNIA as RgbLibAssetNIA,
         AssetUDA as RgbLibAssetUDA, Balance as RgbLibBalance, EmbeddedMedia as RgbLibEmbeddedMedia,
-        Invoice as RgbLibInvoice, Media as RgbLibMedia, ProofOfReserves as RgbLibProofOfReserves,
+        IfaIssuanceType as RgbLibIfaIssuanceType, Invoice as RgbLibInvoice, Media as RgbLibMedia,
+        Outpoint as RgbLibOutpoint, ProofOfReserves as RgbLibProofOfReserves,
         Recipient as RgbLibRecipient, RecipientInfo, RecipientType as RgbLibRecipientType,
         RefreshFilter as RgbLibRefreshFilter, RefreshTransferStatus as RgbLibRefreshTransferStatus,
         SyncKeychain as RgbLibSyncKeychain, SyncOptions as RgbLibSyncOptions,
@@ -70,10 +71,15 @@ use tokio::{
     time::timeout,
 };
 
+use crate::asset_link::{
+    create_asset_link, find_linked_asset_channel, has_sufficient_asset_channel,
+    send_linked_asset_payment,
+};
 use crate::async_order::{
     write_async_payments_next_hash_index, AsyncOrderNewResultWire,
     AsyncOrderOutboundInvoiceResultWire,
 };
+use crate::core_types::asset_link::{AssetLinkRequest, AssetLinkResponse};
 use crate::core_types::async_order::{
     AsyncOrderNewRequest, AsyncOrderNewResponse, AsyncOrderOutboundInvoiceRequest,
     AsyncOrderOutboundInvoiceResponse,
@@ -89,15 +95,17 @@ use crate::signer::read_key_source_file;
 use crate::swap::{SwapData, SwapInfo, SwapString};
 use crate::utils::{
     check_already_initialized, check_channel_id, check_password_strength, check_password_validity,
-    encrypt_and_save_mnemonic, get_max_local_rgb_amount, get_route, hex_str,
-    hex_str_to_compressed_pubkey, hex_str_to_vec, is_external_signer_mode_configured,
+    description_hash_from_invoice, encrypt_and_save_mnemonic, get_max_local_rgb_amount, get_route,
+    hex_str, hex_str_to_compressed_pubkey, hex_str_to_vec, is_external_signer_mode_configured,
     new_jsonrpc_request_id, open_database_pool, validate_and_parse_description_hash,
     validate_and_parse_payment_hash, validate_and_parse_payment_preimage, UnlockedAppState,
     UserOnionMessageContents,
 };
 use crate::{
     backup::{do_backup, restore_backup},
-    core_types::{HTLCStatus, SwapStatus, UnlockRequest as CoreUnlockRequest},
+    core_types::{
+        HTLCStatus, SwapStatus, UnlockRequest as CoreUnlockRequest, PENDING_SWAP_TIMEOUT_SECS,
+    },
     rgb::{check_rgb_proxy_endpoint, get_rgb_channel_info_optional},
 };
 use crate::{
@@ -185,6 +193,9 @@ pub(crate) struct AssetIFA {
     pub(crate) balance: AssetBalanceResponse,
     pub(crate) media: Option<Media>,
     pub(crate) reject_list_url: Option<String>,
+    pub(crate) issuance_link_right_outpoint: Option<RgbLibOutpoint>,
+    pub(crate) linked_from_asset_id: Option<String>,
+    pub(crate) linked_to_asset_id: Option<String>,
 }
 
 impl From<RgbLibAssetIFA> for AssetIFA {
@@ -203,6 +214,9 @@ impl From<RgbLibAssetIFA> for AssetIFA {
             balance: value.balance.into(),
             media: value.media.map(|m| m.into()),
             reject_list_url: value.reject_list_url,
+            issuance_link_right_outpoint: value.issuance_link_right_outpoint,
+            linked_from_asset_id: value.linked_from_asset_id,
+            linked_to_asset_id: value.linked_to_asset_id,
         }
     }
 }
@@ -224,6 +238,9 @@ pub(crate) struct AssetMetadataResponse {
     pub(crate) ticker: Option<String>,
     pub(crate) details: Option<String>,
     pub(crate) token: Option<Token>,
+    pub(crate) unspent_link_right_outpoint: Option<RgbLibOutpoint>,
+    pub(crate) linked_from_asset_id: Option<String>,
+    pub(crate) linked_to_asset_id: Option<String>,
 }
 
 #[derive(Deserialize, Serialize)]
@@ -323,6 +340,7 @@ pub(crate) enum Assignment {
     NonFungible,
     InflationRight(u64),
     Any,
+    LinkRight,
 }
 
 impl From<RgbLibAssignment> for Assignment {
@@ -332,6 +350,7 @@ impl From<RgbLibAssignment> for Assignment {
             RgbLibAssignment::NonFungible => Self::NonFungible,
             RgbLibAssignment::InflationRight(amt) => Self::InflationRight(amt),
             RgbLibAssignment::Any => Self::Any,
+            RgbLibAssignment::LinkRight => Self::LinkRight,
         }
     }
 }
@@ -343,6 +362,7 @@ impl From<Assignment> for RgbLibAssignment {
             Assignment::NonFungible => Self::NonFungible,
             Assignment::InflationRight(amt) => Self::InflationRight(amt),
             Assignment::Any => Self::Any,
+            Assignment::LinkRight => Self::LinkRight,
         }
     }
 }
@@ -529,6 +549,7 @@ pub(crate) struct DecodeRGBInvoiceRequest {
 #[derive(Deserialize, Serialize)]
 pub(crate) struct DecodeRGBInvoiceResponse {
     pub(crate) recipient_id: String,
+    pub(crate) proxy_recipient_id: String,
     pub(crate) recipient_type: RecipientType,
     pub(crate) asset_schema: Option<AssetSchema>,
     pub(crate) asset_id: Option<String>,
@@ -722,6 +743,8 @@ pub(crate) struct IssueAssetIFARequest {
     pub(crate) name: String,
     pub(crate) precision: u8,
     pub(crate) reject_list_url: Option<String>,
+    #[serde(default)]
+    pub(crate) issuance_type: Option<RgbLibIfaIssuanceType>,
 }
 
 #[derive(Deserialize, Serialize)]
@@ -1043,13 +1066,6 @@ pub(crate) struct Payment {
     pub(crate) payee_pubkey: String,
     pub(crate) preimage: Option<String>,
     pub(crate) description_hash: Option<String>,
-}
-
-pub(crate) fn description_hash_from_invoice(invoice: &Bolt11Invoice) -> Option<[u8; 32]> {
-    match invoice.description() {
-        lightning_invoice::Bolt11InvoiceDescriptionRef::Hash(hash) => Some(hash.0.to_byte_array()),
-        _ => None,
-    }
 }
 
 fn payment_type_from_invoice(invoice_type: Option<InvoiceType>) -> PaymentType {
@@ -1413,6 +1429,7 @@ pub(crate) struct Transfer {
     pub(crate) kind: TransferKind,
     pub(crate) txid: Option<String>,
     pub(crate) recipient_id: Option<String>,
+    pub(crate) proxy_recipient_id: Option<String>,
     pub(crate) receive_utxo: Option<String>,
     pub(crate) change_utxo: Option<String>,
     pub(crate) expiration_timestamp: Option<u64>,
@@ -1427,6 +1444,7 @@ pub(crate) enum TransferKind {
     Send,
     Inflation,
     Burn,
+    Link,
 }
 
 #[derive(Debug, PartialEq, Deserialize, Serialize)]
@@ -1818,6 +1836,20 @@ pub(crate) async fn asset_balance(
     }))
 }
 
+pub(crate) async fn asset_link(
+    State(state): State<Arc<AppState>>,
+    WithRejection(Json(payload), _): WithRejection<Json<AssetLinkRequest>, APIError>,
+) -> Result<Json<AssetLinkResponse>, APIError> {
+    no_cancel(async move {
+        let guard = state.check_unlocked().await?;
+        let unlocked_state = guard.as_ref().unwrap();
+        let asset_link = create_asset_link(unlocked_state, payload)?;
+
+        Ok(Json(asset_link))
+    })
+    .await
+}
+
 pub(crate) async fn asset_metadata(
     State(state): State<Arc<AppState>>,
     WithRejection(Json(payload), _): WithRejection<Json<AssetMetadataRequest>, APIError>,
@@ -1843,6 +1875,9 @@ pub(crate) async fn asset_metadata(
         ticker: metadata.ticker,
         details: metadata.details,
         token: metadata.token.map(|t| t.into()),
+        unspent_link_right_outpoint: metadata.unspent_link_right_outpoint,
+        linked_from_asset_id: metadata.linked_from_asset_id,
+        linked_to_asset_id: metadata.linked_to_asset_id,
     }))
 }
 
@@ -2347,6 +2382,7 @@ pub(crate) async fn decode_rgb_invoice(
 
     Ok(Json(DecodeRGBInvoiceResponse {
         recipient_id: invoice_data.recipient_id,
+        proxy_recipient_id: invoice_data.proxy_recipient_id,
         recipient_type: recipient_info.recipient_type.into(),
         asset_schema: invoice_data.asset_schema.map(|s| s.into()),
         asset_id: invoice_data.asset_id,
@@ -2585,7 +2621,7 @@ pub(crate) async fn get_swap(
         if status == SwapStatus::Waiting && get_current_timestamp() > swap_data.swap_info.expiry {
             status = SwapStatus::Expired;
         } else if status == SwapStatus::Pending
-            && get_current_timestamp() > swap_data.initiated_at.unwrap() + 86400
+            && get_current_timestamp() > swap_data.initiated_at.unwrap() + PENDING_SWAP_TIMEOUT_SECS
         {
             status = SwapStatus::Failed;
         }
@@ -2838,6 +2874,7 @@ pub(crate) async fn issue_asset_ifa(
             payload.amounts,
             payload.inflation_amounts,
             payload.reject_list_url,
+            payload.issuance_type,
         )?;
 
         Ok(Json(IssueAssetIFAResponse {
@@ -3321,7 +3358,7 @@ pub(crate) async fn list_swaps(
         if status == SwapStatus::Waiting && get_current_timestamp() > swap_data.swap_info.expiry {
             status = SwapStatus::Expired;
         } else if status == SwapStatus::Pending
-            && get_current_timestamp() > swap_data.initiated_at.unwrap() + 86400
+            && get_current_timestamp() > swap_data.initiated_at.unwrap() + PENDING_SWAP_TIMEOUT_SECS
         {
             status = SwapStatus::Failed;
         }
@@ -3464,9 +3501,11 @@ pub(crate) async fn list_transfers(
                 rgb_lib::wallet::TransferKind::Send => TransferKind::Send,
                 rgb_lib::wallet::TransferKind::Inflation => TransferKind::Inflation,
                 rgb_lib::wallet::TransferKind::Burn => TransferKind::Burn,
+                rgb_lib::wallet::TransferKind::Link => TransferKind::Link,
             },
             txid: transfer.txid,
             recipient_id: transfer.recipient_id,
+            proxy_recipient_id: transfer.proxy_recipient_id,
             receive_utxo: transfer.receive_utxo.map(|u| u.to_string()),
             change_utxo: transfer.change_utxo.map(|u| u.to_string()),
             expiration_timestamp: transfer.expiration_timestamp,
@@ -4816,6 +4855,9 @@ pub(crate) async fn send_payment(
                 Err(e) => return Err(APIError::InvalidInvoice(e.to_string())),
                 Ok(v) => v,
             };
+            if invoice.is_expired() {
+                return Err(APIError::InvalidInvoice(s!("invoice has expired")));
+            }
 
             let payment_id = PaymentId((*invoice.payment_hash()).to_byte_array());
             let payment_secret = Some(*invoice.payment_secret());
@@ -4878,6 +4920,41 @@ pub(crate) async fn send_payment(
                     )))
                 }
             };
+
+            if let Some((contract_id, asset_amount)) = rgb_payment {
+                if !has_sufficient_asset_channel(
+                    unlocked_state,
+                    contract_id,
+                    asset_amount,
+                    amt_msat,
+                ) {
+                    if let Some((linked_contract_id, host_pubkey)) = find_linked_asset_channel(
+                        unlocked_state,
+                        contract_id,
+                        asset_amount,
+                        amt_msat,
+                        invoice.recover_payee_pub_key(),
+                    ) {
+                        let linked_payment = send_linked_asset_payment(
+                            unlocked_state,
+                            &invoice,
+                            contract_id,
+                            linked_contract_id,
+                            asset_amount,
+                            amt_msat,
+                            host_pubkey,
+                        )
+                        .await?;
+
+                        return Ok(Json(SendPaymentResponse {
+                            payment_id: hex_str(&linked_payment.payment_id.0),
+                            payment_hash: Some(hex_str(&linked_payment.payment_hash.0)),
+                            payment_secret: Some(hex_str(&linked_payment.payment_secret.0)),
+                            status: linked_payment.status,
+                        }));
+                    }
+                }
+            }
 
             if rgb_payment.is_none() {
                 let payment_hash = PaymentHash(invoice.payment_hash().to_byte_array());
@@ -5247,6 +5324,7 @@ pub(crate) async fn vss_backup_info(
         "backup_exists": info.backup_exists,
         "server_version": info.server_version,
         "backup_required": info.backup_required,
+        "last_auto_backup_error": info.last_auto_backup_error,
         "pending_kv_writes": pending_kv_writes,
     })))
 }
@@ -5468,6 +5546,7 @@ mod external_signer_auth_tests {
 
         Arc::new(AppState {
             static_state: Arc::new(StaticState {
+                config: Default::default(),
                 ldk_peer_listening_port: 9735,
                 network: rgb_lib::BitcoinNetwork::Regtest,
                 storage_dir_path: path.clone(),
