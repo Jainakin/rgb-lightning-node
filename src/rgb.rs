@@ -25,7 +25,7 @@ use rgb_lib::{
         Transaction as RgbLibTransaction, Transfer, TransferKind, TransportEndpoint, Unspent,
         Wallet as RgbLibWallet,
     },
-    AssetSchema, Assignment, BitcoinNetwork, ConsignmentExt, ContractId, Error as RgbLibError, Fascia, RgbTransfer,
+    AssetSchema, Assignment, BitcoinNetwork, ConsignmentExt, ContractId, Error as RgbLibError, Fascia, RgbContract, RgbTransfer,
     RgbTxid, UpdateRes, WitnessOrd,
 };
 use std::collections::{HashMap, HashSet};
@@ -236,6 +236,14 @@ impl UnlockedAppState {
             .save_new_asset(consignment, offchain_txid)?;
         let metadata = self.rgb_get_asset_metadata(contract_id)?;
         Ok((metadata, false))
+    }
+
+    pub(crate) fn rgb_import_asset_contract(
+        &self,
+        contract: RgbContract,
+    ) -> Result<(Metadata, bool), RgbLibError> {
+        let imported = self.rgb_wallet_wrapper.import_asset_contract(contract)?;
+        Ok((imported.metadata, imported.already_imported))
     }
 
     pub(crate) fn rgb_get_btc_balance(&self, skip_sync: bool) -> Result<BtcBalance, RgbLibError> {
@@ -967,6 +975,13 @@ impl RgbLibWalletWrapper {
     ) -> Result<(), RgbLibError> {
         self.get_rgb_wallet()
             .save_new_asset(self.online, consignment, offchain_txid)
+    }
+
+    pub(crate) fn import_asset_contract(
+        &self,
+        contract: RgbContract,
+    ) -> Result<rgb_lib::wallet::rust_only::ImportAssetContractResult, RgbLibError> {
+        self.get_rgb_wallet().import_asset_contract(contract)
     }
 
     pub(crate) fn send(

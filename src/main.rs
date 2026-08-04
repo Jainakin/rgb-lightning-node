@@ -85,7 +85,7 @@ use crate::routes::{
     check_indexer_url, check_proxy_endpoint, claim_hodl_invoice, close_channel, connect_peer,
     create_utxos, decode_ln_invoice, decode_rgb_invoice, decode_swapstring, disconnect_peer,
     estimate_fee, fail_transfers, get_asset_media, get_channel_id, get_consignment, get_payment,
-    get_swap, import_rgb_transfer_consignment, inflate, init, invoice_status, issue_asset_cfa, issue_asset_ifa, issue_asset_nia,
+    get_swap, import_rgb_contract, import_rgb_transfer_consignment, inflate, init, invoice_status, issue_asset_cfa, issue_asset_ifa, issue_asset_nia,
     issue_asset_uda, keysend, list_assets, list_channels, list_payments, list_peers, list_swaps,
     list_transactions, list_transfers, list_unspents, ln_invoice, lock, maker_execute, maker_init,
     network_info, node_info, open_channel, post_asset_media, provide_out_of_band_ack,
@@ -211,6 +211,7 @@ pub(crate) async fn app(args: UserArgs) -> Result<(Router, Arc<AppState>), AppEr
             "/importrgbtransferconsignment",
             post(import_rgb_transfer_consignment),
         )
+        .route("/importrgbcontract", post(import_rgb_contract))
         .route("/inflate", post(inflate))
         .route("/init", post(init))
         .route("/invoicestatus", post(invoice_status))
