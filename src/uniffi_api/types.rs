@@ -726,6 +726,17 @@ pub struct ImportRgbTransferConsignmentResponse {
     pub metadata: AssetMetadataInfo,
 }
 
+pub struct ImportRgbContractRequest {
+    pub contract_base64: String,
+    pub expected_asset_id: ContractId,
+}
+
+pub struct ImportRgbContractResponse {
+    pub asset_id: ContractId,
+    pub already_imported: bool,
+    pub metadata: AssetMetadataInfo,
+}
+
 pub struct LnInvoiceResponse {
     pub invoice: Bolt11Invoice,
 }

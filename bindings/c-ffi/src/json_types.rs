@@ -19,23 +19,23 @@ use rgb_lightning_node::{
     BtcBalanceInfo, CancelHodlInvoiceRequest, Channel, ChannelId, ChannelStatus,
     CheckIndexerUrlResponse, ClaimHodlInvoiceRequest, ClaimHodlInvoiceResponse, ContractId,
     DecodeLnInvoiceResponse, DecodeRgbInvoiceResponse, EmbeddedMedia, EstimateFeeResponse,
-    HtlcStatus, IfaIssuanceType, ImportRgbTransferConsignmentRequest,
-    ImportRgbTransferConsignmentResponse, InflateRequest, InflateResponse, InvoiceStatus,
-    ListAssetsResponse, LnInvoiceRequest, LnInvoiceResponse, Media, MediaAttachment, NetworkInfo,
-    NodeInfo, Payment, PaymentHash, PaymentType, Peer, ProofOfReserves, PublicKey, RecipientId,
-    RgbAllocation, RgbOutpoint, RgbRecipient, SdkAssetLinkRequest, SdkCloseChannelRequest,
-    SdkCreateUtxosRequest, SdkDisconnectPeerRequest, SdkExternalSignerBootstrap,
-    SdkFailTransfersRequest, SdkFailTransfersResponse, SdkInitRequest, SdkIssueAssetCfaRequest,
-    SdkIssueAssetIfaRequest, SdkIssueAssetNiaRequest, SdkIssueAssetUdaRequest, SdkKeysendRequest,
-    SdkKeysendResponse, SdkMakerExecuteRequest, SdkMakerInitRequest, SdkMakerInitResponse,
-    SdkOpenChannelRequest, SdkOpenChannelResponse, SdkPostAssetMediaRequest,
-    SdkPostAssetMediaResponse, SdkRefreshTransfersRequest, SdkRgbInvoiceRequest,
-    SdkRgbInvoiceResponse, SdkSendBtcRequest, SdkSendBtcResponse, SdkSendOnionMessageRequest,
-    SdkSendPaymentRequest, SdkSendPaymentResponse, SdkTakerRequest, SdkUnlockRequest,
-    SdkVssClearFenceRequest, SendRgbRequest, SendRgbResponse, SignMessageResponse, Swap, SwapList,
-    SwapStatus, Token, TokenLight, Transaction, TransactionType, Transfer,
-    TransferTransportEndpoint, TransportEndpoint, Txid, Unspent, Utxo, VerifyMessageResponse,
-    WitnessData,
+    HtlcStatus, IfaIssuanceType, ImportRgbContractRequest, ImportRgbContractResponse,
+    ImportRgbTransferConsignmentRequest, ImportRgbTransferConsignmentResponse, InflateRequest,
+    InflateResponse, InvoiceStatus, ListAssetsResponse, LnInvoiceRequest, LnInvoiceResponse, Media,
+    MediaAttachment, NetworkInfo, NodeInfo, Payment, PaymentHash, PaymentType, Peer,
+    ProofOfReserves, PublicKey, RecipientId, RgbAllocation, RgbOutpoint, RgbRecipient,
+    SdkAssetLinkRequest, SdkCloseChannelRequest, SdkCreateUtxosRequest, SdkDisconnectPeerRequest,
+    SdkExternalSignerBootstrap, SdkFailTransfersRequest, SdkFailTransfersResponse, SdkInitRequest,
+    SdkIssueAssetCfaRequest, SdkIssueAssetIfaRequest, SdkIssueAssetNiaRequest,
+    SdkIssueAssetUdaRequest, SdkKeysendRequest, SdkKeysendResponse, SdkMakerExecuteRequest,
+    SdkMakerInitRequest, SdkMakerInitResponse, SdkOpenChannelRequest, SdkOpenChannelResponse,
+    SdkPostAssetMediaRequest, SdkPostAssetMediaResponse, SdkRefreshTransfersRequest,
+    SdkRgbInvoiceRequest, SdkRgbInvoiceResponse, SdkSendBtcRequest, SdkSendBtcResponse,
+    SdkSendOnionMessageRequest, SdkSendPaymentRequest, SdkSendPaymentResponse, SdkTakerRequest,
+    SdkUnlockRequest, SdkVssClearFenceRequest, SendRgbRequest, SendRgbResponse,
+    SignMessageResponse, Swap, SwapList, SwapStatus, Token, TokenLight, Transaction,
+    TransactionType, Transfer, TransferTransportEndpoint, TransportEndpoint, Txid, Unspent, Utxo,
+    VerifyMessageResponse, WitnessData,
 };
 use serde::{Deserialize, Serialize};
 
@@ -1018,6 +1018,40 @@ pub(crate) struct JsonImportRgbTransferConsignmentResponse {
 impl From<ImportRgbTransferConsignmentResponse> for JsonImportRgbTransferConsignmentResponse {
     fn from(r: ImportRgbTransferConsignmentResponse) -> Self {
         JsonImportRgbTransferConsignmentResponse {
+            asset_id: fmt_contract_id(&r.asset_id),
+            already_imported: r.already_imported,
+            metadata: r.metadata.into(),
+        }
+    }
+}
+
+#[derive(Debug, Deserialize)]
+pub(crate) struct JsonImportRgbContractRequest {
+    pub contract_base64: String,
+    pub expected_asset_id: String,
+}
+
+impl TryFrom<JsonImportRgbContractRequest> for ImportRgbContractRequest {
+    type Error = Error;
+
+    fn try_from(j: JsonImportRgbContractRequest) -> Result<Self, Self::Error> {
+        Ok(ImportRgbContractRequest {
+            contract_base64: j.contract_base64,
+            expected_asset_id: parse_contract_id(&j.expected_asset_id)?,
+        })
+    }
+}
+
+#[derive(Debug, Serialize)]
+pub(crate) struct JsonImportRgbContractResponse {
+    pub asset_id: String,
+    pub already_imported: bool,
+    pub metadata: JsonAssetMetadataInfo,
+}
+
+impl From<ImportRgbContractResponse> for JsonImportRgbContractResponse {
+    fn from(r: ImportRgbContractResponse) -> Self {
+        Self {
             asset_id: fmt_contract_id(&r.asset_id),
             already_imported: r.already_imported,
             metadata: r.metadata.into(),

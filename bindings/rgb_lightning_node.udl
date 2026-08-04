@@ -71,6 +71,8 @@ interface SdkNode {
     [Throws=RlnError]
     ImportRgbTransferConsignmentResponse importrgbtransferconsignment(ImportRgbTransferConsignmentRequest request);
     [Throws=RlnError]
+    ImportRgbContractResponse importrgbcontract(ImportRgbContractRequest request);
+    [Throws=RlnError]
     SdkKeysendResponse keysend(SdkKeysendRequest request);
     [Throws=RlnError]
     SdkSendBtcResponse sendbtc(SdkSendBtcRequest request);
@@ -810,6 +812,17 @@ dictionary ImportRgbTransferConsignmentRequest {
 };
 
 dictionary ImportRgbTransferConsignmentResponse {
+    ContractId asset_id;
+    boolean already_imported;
+    AssetMetadataInfo metadata;
+};
+
+dictionary ImportRgbContractRequest {
+    string contract_base64;
+    ContractId expected_asset_id;
+};
+
+dictionary ImportRgbContractResponse {
     ContractId asset_id;
     boolean already_imported;
     AssetMetadataInfo metadata;

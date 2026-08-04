@@ -1,4 +1,5 @@
 use crate::ldk::write_rgb_payment_info_file;
+use crate::sdk;
 use amplify::{map, s};
 use axum::{
     extract::{Multipart, State},
@@ -254,6 +255,19 @@ pub(crate) struct ImportRgbTransferConsignmentRequest {
 
 #[derive(Deserialize, Serialize)]
 pub(crate) struct ImportRgbTransferConsignmentResponse {
+    pub(crate) asset_id: String,
+    pub(crate) already_imported: bool,
+    pub(crate) metadata: AssetMetadataResponse,
+}
+
+#[derive(Deserialize, Serialize)]
+pub(crate) struct ImportRgbContractRequest {
+    pub(crate) contract_base64: String,
+    pub(crate) expected_asset_id: String,
+}
+
+#[derive(Deserialize, Serialize)]
+pub(crate) struct ImportRgbContractResponse {
     pub(crate) asset_id: String,
     pub(crate) already_imported: bool,
     pub(crate) metadata: AssetMetadataResponse,
@@ -1904,6 +1918,56 @@ fn asset_metadata_response_from_metadata(metadata: RgbLibMetadata) -> AssetMetad
     }
 }
 
+fn asset_metadata_response_from_data(metadata: sdk::AssetMetadataData) -> AssetMetadataResponse {
+    AssetMetadataResponse {
+        asset_schema: metadata.asset_schema.into(),
+        initial_supply: metadata.initial_supply,
+        max_supply: metadata.max_supply,
+        known_circulating_supply: metadata.known_circulating_supply,
+        timestamp: metadata.timestamp,
+        name: metadata.name,
+        precision: metadata.precision,
+        ticker: metadata.ticker,
+        details: metadata.details,
+        token: metadata.token.map(|token| Token {
+            index: token.index,
+            ticker: token.ticker,
+            name: token.name,
+            details: token.details,
+            embedded_media: token.embedded_media.map(|media| EmbeddedMedia {
+                mime: media.mime,
+                data: media.data,
+            }),
+            media: token.media.map(|media| Media {
+                file_path: media.file_path,
+                digest: media.digest,
+                mime: media.mime,
+            }),
+            attachments: token
+                .attachments
+                .into_iter()
+                .map(|(index, media)| {
+                    (
+                        index,
+                        Media {
+                            file_path: media.file_path,
+                            digest: media.digest,
+                            mime: media.mime,
+                        },
+                    )
+                })
+                .collect(),
+            reserves: token.reserves.map(|reserves| ProofOfReserves {
+                utxo: reserves.utxo,
+                proof: reserves.proof,
+            }),
+        }),
+        unspent_link_right_outpoint: metadata.unspent_link_right_outpoint,
+        linked_from_asset_id: metadata.linked_from_asset_id,
+        linked_to_asset_id: metadata.linked_to_asset_id,
+    }
+}
+
 pub(crate) async fn import_rgb_transfer_consignment(
     State(state): State<Arc<AppState>>,
     WithRejection(Json(payload), _): WithRejection<
@@ -1942,6 +2006,25 @@ pub(crate) async fn import_rgb_transfer_consignment(
         asset_id,
         already_imported,
         metadata: asset_metadata_response_from_metadata(metadata),
+    }))
+}
+
+pub(crate) async fn import_rgb_contract(
+    State(state): State<Arc<AppState>>,
+    WithRejection(Json(payload), _): WithRejection<Json<ImportRgbContractRequest>, APIError>,
+) -> Result<Json<ImportRgbContractResponse>, APIError> {
+    let imported = sdk::import_rgb_contract(
+        state,
+        sdk::ImportRgbContractRequestData {
+            contract_base64: payload.contract_base64,
+            expected_asset_id: payload.expected_asset_id,
+        },
+    )
+    .await?;
+    Ok(Json(ImportRgbContractResponse {
+        asset_id: imported.asset_id,
+        already_imported: imported.already_imported,
+        metadata: asset_metadata_response_from_data(imported.metadata),
     }))
 }
 
