@@ -38,6 +38,7 @@ use crate::utils::{
     UserOnionMessageContents,
 };
 use amplify::{map, s};
+use base64::{engine::general_purpose, Engine as _};
 use bitcoin::hashes::sha256::Hash as Sha256;
 use bitcoin::hashes::Hash;
 use bitcoin::hex::DisplayHex;
@@ -81,7 +82,7 @@ use rgb_lib::wallet::{
 use rgb_lib::{
     bdk_wallet::keys::bip39::Mnemonic,
     keys::{generate_keys, WitnessVersion},
-    ContractId, RgbTransport,
+    ConsignmentExt, ContractId, FileContent, RgbTransfer, RgbTransport,
 };
 use std::collections::HashMap;
 use std::net::ToSocketAddrs;
@@ -97,8 +98,9 @@ use rgb_lib::wallet::RecipientType as RgbLibRecipientType;
 use rgb_lib::wallet::{
     AssetCFA as RgbLibAssetCFA, AssetIFA as RgbLibAssetIFA, AssetNIA as RgbLibAssetNIA,
     AssetUDA as RgbLibAssetUDA, EmbeddedMedia as RgbLibEmbeddedMedia,
-    IfaIssuanceType as RgbLibIfaIssuanceType, Media as RgbLibMedia, Outpoint as RgbLibOutpoint,
-    ProofOfReserves as RgbLibProofOfReserves, Token as RgbLibToken, TokenLight as RgbLibTokenLight,
+    IfaIssuanceType as RgbLibIfaIssuanceType, Media as RgbLibMedia, Metadata as RgbLibMetadata,
+    Outpoint as RgbLibOutpoint, ProofOfReserves as RgbLibProofOfReserves, Token as RgbLibToken,
+    TokenLight as RgbLibTokenLight,
 };
 use rgb_lib::BitcoinNetwork as RgbBitcoinNetwork;
 use rgb_lib::{AssetSchema as RgbLibAssetSchema, Assignment as RgbLibAssignment};
@@ -242,6 +244,18 @@ pub(crate) struct AssetMetadataData {
     pub(crate) unspent_link_right_outpoint: Option<RgbLibOutpoint>,
     pub(crate) linked_from_asset_id: Option<String>,
     pub(crate) linked_to_asset_id: Option<String>,
+}
+
+pub(crate) struct ImportRgbTransferConsignmentRequestData {
+    pub(crate) consignment_base64: String,
+    pub(crate) offchain_txid: String,
+    pub(crate) expected_asset_id: Option<String>,
+}
+
+pub(crate) struct ImportRgbTransferConsignmentData {
+    pub(crate) asset_id: String,
+    pub(crate) already_imported: bool,
+    pub(crate) metadata: AssetMetadataData,
 }
 
 pub(crate) struct BtcBalance {
@@ -1609,7 +1623,11 @@ pub(crate) async fn asset_metadata(
         .unwrap()
         .rgb_get_asset_metadata(contract_id)?;
 
-    Ok(AssetMetadataData {
+    Ok(asset_metadata_data_from_metadata(metadata))
+}
+
+fn asset_metadata_data_from_metadata(metadata: RgbLibMetadata) -> AssetMetadataData {
+    AssetMetadataData {
         asset_schema: metadata.asset_schema,
         initial_supply: metadata.initial_supply,
         max_supply: metadata.max_supply,
@@ -1623,6 +1641,44 @@ pub(crate) async fn asset_metadata(
         unspent_link_right_outpoint: metadata.unspent_link_right_outpoint,
         linked_from_asset_id: metadata.linked_from_asset_id,
         linked_to_asset_id: metadata.linked_to_asset_id,
+    }
+}
+
+pub(crate) async fn import_rgb_transfer_consignment(
+    state: Arc<AppState>,
+    request: ImportRgbTransferConsignmentRequestData,
+) -> Result<ImportRgbTransferConsignmentData, APIError> {
+    let consignment_bytes = general_purpose::STANDARD
+        .decode(request.consignment_base64)
+        .map_err(|error| APIError::InvalidRgbConsignment(format!("invalid base64: {error}")))?;
+    let consignment = RgbTransfer::load(&consignment_bytes[..])
+        .map_err(|error| APIError::InvalidRgbConsignment(error.to_string()))?;
+    let asset_id = consignment.contract_id().to_string();
+
+    if let Some(expected_asset_id) = request.expected_asset_id {
+        let expected_contract_id = ContractId::from_str(&expected_asset_id)
+            .map_err(|_| APIError::InvalidAssetID(expected_asset_id.clone()))?;
+        if expected_contract_id != consignment.contract_id() {
+            return Err(APIError::InvalidRgbConsignment(format!(
+                "expected asset id {expected_asset_id}, got {asset_id}"
+            )));
+        }
+    }
+
+    let guard = check_unlocked(&state).await?;
+    let unlocked_state = guard.as_ref().unwrap();
+    let unlocked_state_copy = unlocked_state.clone();
+    let offchain_txid = request.offchain_txid;
+    let (metadata, already_imported) = tokio::task::spawn_blocking(move || {
+        unlocked_state_copy.rgb_import_transfer_consignment(consignment, offchain_txid)
+    })
+    .await
+    .unwrap()?;
+
+    Ok(ImportRgbTransferConsignmentData {
+        asset_id,
+        already_imported,
+        metadata: asset_metadata_data_from_metadata(metadata),
     })
 }
 

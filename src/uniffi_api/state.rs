@@ -192,6 +192,7 @@ pub(crate) fn map_api_error(err: APIError) -> RlnError {
         | APIError::InvalidEstimationBlocks
         | APIError::InvalidFeeRate(_)
         | APIError::InvalidInvoice(_)
+        | APIError::InvalidRgbConsignment(_)
         | APIError::InvalidMediaDigest
         | APIError::InvalidMnemonic(_)
         | APIError::InvalidName(_)

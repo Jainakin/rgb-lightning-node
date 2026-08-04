@@ -24,8 +24,8 @@ use rgb_lib::{
         SinglesigKeys, SyncOptions, Transaction as RgbLibTransaction, Transfer, TransferKind,
         TransportEndpoint, Unspent, Wallet as RgbLibWallet,
     },
-    AssetSchema, Assignment, BitcoinNetwork, ContractId, Error as RgbLibError, Fascia, RgbTransfer,
-    RgbTransport, RgbTxid, UpdateRes, WitnessOrd,
+    AssetSchema, Assignment, BitcoinNetwork, ConsignmentExt, ContractId, Error as RgbLibError,
+    Fascia, RgbTransfer, RgbTransport, RgbTxid, UpdateRes, WitnessOrd,
 };
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -217,6 +217,24 @@ impl UnlockedAppState {
         contract_id: ContractId,
     ) -> Result<Metadata, RgbLibError> {
         self.rgb_wallet_wrapper.get_asset_metadata(contract_id)
+    }
+
+    pub(crate) fn rgb_import_transfer_consignment(
+        &self,
+        consignment: RgbTransfer,
+        offchain_txid: String,
+    ) -> Result<(Metadata, bool), RgbLibError> {
+        let contract_id = consignment.contract_id();
+        match self.rgb_get_asset_metadata(contract_id) {
+            Ok(metadata) => return Ok((metadata, true)),
+            Err(RgbLibError::AssetNotFound { .. }) => {}
+            Err(error) => return Err(error),
+        }
+
+        self.rgb_wallet_wrapper
+            .save_new_asset(consignment, offchain_txid)?;
+        let metadata = self.rgb_get_asset_metadata(contract_id)?;
+        Ok((metadata, false))
     }
 
     pub(crate) fn rgb_get_btc_balance(&self, skip_sync: bool) -> Result<BtcBalance, RgbLibError> {

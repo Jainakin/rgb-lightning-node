@@ -19,7 +19,8 @@ use rgb_lightning_node::{
     BtcBalanceInfo, CancelHodlInvoiceRequest, Channel, ChannelId, ChannelStatus,
     CheckIndexerUrlResponse, ClaimHodlInvoiceRequest, ClaimHodlInvoiceResponse, ContractId,
     DecodeLnInvoiceResponse, DecodeRgbInvoiceResponse, EmbeddedMedia, EstimateFeeResponse,
-    HtlcStatus, IfaIssuanceType, InflateRequest, InflateResponse, InvoiceStatus,
+    HtlcStatus, IfaIssuanceType, ImportRgbTransferConsignmentRequest,
+    ImportRgbTransferConsignmentResponse, InflateRequest, InflateResponse, InvoiceStatus,
     ListAssetsResponse, LnInvoiceRequest, LnInvoiceResponse, Media, MediaAttachment, NetworkInfo,
     NodeInfo, Payment, PaymentHash, PaymentType, Peer, ProofOfReserves, PublicKey, RecipientId,
     RgbAllocation, RgbOutpoint, RgbRecipient, SdkAssetLinkRequest, SdkCloseChannelRequest,
@@ -981,6 +982,45 @@ impl From<SendRgbResponse> for JsonSendRgbResponse {
         JsonSendRgbResponse {
             txid: fmt_txid(&r.txid),
             batch_transfer_idx: r.batch_transfer_idx,
+        }
+    }
+}
+
+#[derive(Debug, Deserialize)]
+pub(crate) struct JsonImportRgbTransferConsignmentRequest {
+    pub consignment_base64: String,
+    pub offchain_txid: String,
+    #[serde(default)]
+    pub expected_asset_id: Option<String>,
+}
+
+impl TryFrom<JsonImportRgbTransferConsignmentRequest> for ImportRgbTransferConsignmentRequest {
+    type Error = Error;
+    fn try_from(j: JsonImportRgbTransferConsignmentRequest) -> Result<Self, Self::Error> {
+        Ok(ImportRgbTransferConsignmentRequest {
+            consignment_base64: j.consignment_base64,
+            offchain_txid: j.offchain_txid,
+            expected_asset_id: j
+                .expected_asset_id
+                .map(|s| parse_contract_id(&s))
+                .transpose()?,
+        })
+    }
+}
+
+#[derive(Debug, Serialize)]
+pub(crate) struct JsonImportRgbTransferConsignmentResponse {
+    pub asset_id: String,
+    pub already_imported: bool,
+    pub metadata: JsonAssetMetadataInfo,
+}
+
+impl From<ImportRgbTransferConsignmentResponse> for JsonImportRgbTransferConsignmentResponse {
+    fn from(r: ImportRgbTransferConsignmentResponse) -> Self {
+        JsonImportRgbTransferConsignmentResponse {
+            asset_id: fmt_contract_id(&r.asset_id),
+            already_imported: r.already_imported,
+            metadata: r.metadata.into(),
         }
     }
 }

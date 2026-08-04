@@ -5,6 +5,7 @@ use axum::{
     Json,
 };
 use axum_extra::extract::WithRejection;
+use base64::{engine::general_purpose, Engine as _};
 use biscuit_auth::Biscuit;
 use bitcoin::hashes::sha256::{self, Hash as Sha256};
 use bitcoin::hashes::Hash;
@@ -49,15 +50,16 @@ use rgb_lib::{
         AssetCFA as RgbLibAssetCFA, AssetIFA as RgbLibAssetIFA, AssetNIA as RgbLibAssetNIA,
         AssetUDA as RgbLibAssetUDA, Balance as RgbLibBalance, EmbeddedMedia as RgbLibEmbeddedMedia,
         IfaIssuanceType as RgbLibIfaIssuanceType, Invoice as RgbLibInvoice, Media as RgbLibMedia,
-        Outpoint as RgbLibOutpoint, ProofOfReserves as RgbLibProofOfReserves,
-        Recipient as RgbLibRecipient, RecipientInfo, RecipientType as RgbLibRecipientType,
-        RefreshFilter as RgbLibRefreshFilter, RefreshTransferStatus as RgbLibRefreshTransferStatus,
-        SyncKeychain as RgbLibSyncKeychain, SyncOptions as RgbLibSyncOptions,
-        SyncStrategy as RgbLibSyncStrategy, Token as RgbLibToken, TokenLight as RgbLibTokenLight,
-        WitnessData as RgbLibWitnessData,
+        Metadata as RgbLibMetadata, Outpoint as RgbLibOutpoint,
+        ProofOfReserves as RgbLibProofOfReserves, Recipient as RgbLibRecipient, RecipientInfo,
+        RecipientType as RgbLibRecipientType, RefreshFilter as RgbLibRefreshFilter,
+        RefreshTransferStatus as RgbLibRefreshTransferStatus, SyncKeychain as RgbLibSyncKeychain,
+        SyncOptions as RgbLibSyncOptions, SyncStrategy as RgbLibSyncStrategy, Token as RgbLibToken,
+        TokenLight as RgbLibTokenLight, WitnessData as RgbLibWitnessData,
     },
     AssetSchema as RgbLibAssetSchema, Assignment as RgbLibAssignment,
-    BitcoinNetwork as RgbLibNetwork, ContractId, RgbTransport,
+    BitcoinNetwork as RgbLibNetwork, ConsignmentExt, ContractId, FileContent, RgbTransfer,
+    RgbTransport,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -241,6 +243,20 @@ pub(crate) struct AssetMetadataResponse {
     pub(crate) unspent_link_right_outpoint: Option<RgbLibOutpoint>,
     pub(crate) linked_from_asset_id: Option<String>,
     pub(crate) linked_to_asset_id: Option<String>,
+}
+
+#[derive(Deserialize, Serialize)]
+pub(crate) struct ImportRgbTransferConsignmentRequest {
+    pub(crate) consignment_base64: String,
+    pub(crate) offchain_txid: String,
+    pub(crate) expected_asset_id: Option<String>,
+}
+
+#[derive(Deserialize, Serialize)]
+pub(crate) struct ImportRgbTransferConsignmentResponse {
+    pub(crate) asset_id: String,
+    pub(crate) already_imported: bool,
+    pub(crate) metadata: AssetMetadataResponse,
 }
 
 #[derive(Deserialize, Serialize)]
@@ -1867,7 +1883,11 @@ pub(crate) async fn asset_metadata(
         .unwrap()
         .rgb_get_asset_metadata(contract_id)?;
 
-    Ok(Json(AssetMetadataResponse {
+    Ok(Json(asset_metadata_response_from_metadata(metadata)))
+}
+
+fn asset_metadata_response_from_metadata(metadata: RgbLibMetadata) -> AssetMetadataResponse {
+    AssetMetadataResponse {
         asset_schema: metadata.asset_schema.into(),
         initial_supply: metadata.initial_supply,
         max_supply: metadata.max_supply,
@@ -1881,6 +1901,47 @@ pub(crate) async fn asset_metadata(
         unspent_link_right_outpoint: metadata.unspent_link_right_outpoint,
         linked_from_asset_id: metadata.linked_from_asset_id,
         linked_to_asset_id: metadata.linked_to_asset_id,
+    }
+}
+
+pub(crate) async fn import_rgb_transfer_consignment(
+    State(state): State<Arc<AppState>>,
+    WithRejection(Json(payload), _): WithRejection<
+        Json<ImportRgbTransferConsignmentRequest>,
+        APIError,
+    >,
+) -> Result<Json<ImportRgbTransferConsignmentResponse>, APIError> {
+    let consignment_bytes = general_purpose::STANDARD
+        .decode(payload.consignment_base64)
+        .map_err(|error| APIError::InvalidRgbConsignment(format!("invalid base64: {error}")))?;
+    let consignment = RgbTransfer::load(&consignment_bytes[..])
+        .map_err(|error| APIError::InvalidRgbConsignment(error.to_string()))?;
+    let asset_id = consignment.contract_id().to_string();
+
+    if let Some(expected_asset_id) = payload.expected_asset_id {
+        let expected_contract_id = ContractId::from_str(&expected_asset_id)
+            .map_err(|_| APIError::InvalidAssetID(expected_asset_id.clone()))?;
+        if expected_contract_id != consignment.contract_id() {
+            return Err(APIError::InvalidRgbConsignment(format!(
+                "expected asset id {expected_asset_id}, got {asset_id}"
+            )));
+        }
+    }
+
+    let guard = state.check_unlocked().await?;
+    let unlocked_state = guard.as_ref().unwrap();
+    let unlocked_state_copy = unlocked_state.clone();
+    let offchain_txid = payload.offchain_txid;
+    let (metadata, already_imported) = tokio::task::spawn_blocking(move || {
+        unlocked_state_copy.rgb_import_transfer_consignment(consignment, offchain_txid)
+    })
+    .await
+    .unwrap()?;
+
+    Ok(Json(ImportRgbTransferConsignmentResponse {
+        asset_id,
+        already_imported,
+        metadata: asset_metadata_response_from_metadata(metadata),
     }))
 }
 

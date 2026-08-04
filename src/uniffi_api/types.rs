@@ -714,6 +714,18 @@ pub struct SdkRgbInvoiceResponse {
     pub batch_transfer_idx: i32,
 }
 
+pub struct ImportRgbTransferConsignmentRequest {
+    pub consignment_base64: String,
+    pub offchain_txid: String,
+    pub expected_asset_id: Option<ContractId>,
+}
+
+pub struct ImportRgbTransferConsignmentResponse {
+    pub asset_id: ContractId,
+    pub already_imported: bool,
+    pub metadata: AssetMetadataInfo,
+}
+
 pub struct LnInvoiceResponse {
     pub invoice: Bolt11Invoice,
 }
