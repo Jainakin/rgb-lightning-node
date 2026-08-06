@@ -47,6 +47,11 @@ docker build -t rgb-lightning-node .
 See [UniFFI SDK documentation](src/uniffi_api/README.md) for setup, runtime
 model, binding generation, test commands, and artifact packaging details.
 
+## AI code review
+The repository supports AI-assisted pull request reviews.
+Setup details for Claude, Codex, and extendable provider onboarding are documented in
+[`/.github/ai-review-bots.md`](.github/ai-review-bots.md).
+
 ## Run
 
 In order to operate, the node will need:
