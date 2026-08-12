@@ -110,8 +110,12 @@ mod tests {
                 .expect("VSS request must arrive");
         }
 
-        fn request_arrived_within(&self, timeout: Duration) -> bool {
-            self.arrived.recv_timeout(timeout).is_ok()
+        fn try_request(&self) -> Result<bool, mpsc::TryRecvError> {
+            match self.arrived.try_recv() {
+                Ok(()) => Ok(true),
+                Err(mpsc::TryRecvError::Empty) => Ok(false),
+                Err(error) => Err(error),
+            }
         }
 
         fn cut(&self) {
@@ -299,9 +303,13 @@ mod tests {
             resume_rx.lock().unwrap().recv().expect("resume drain");
         }));
 
+        let (drain_done_tx, drain_done_rx) = mpsc::channel();
         let drainer = {
             let synced = Arc::clone(&synced);
-            std::thread::spawn(move || synced.drain_pending())
+            std::thread::spawn(move || {
+                synced.drain_pending();
+                drain_done_tx.send(()).expect("signal drain completion");
+            })
         };
         at_gate_rx
             .recv_timeout(Duration::from_secs(5))
@@ -310,7 +318,27 @@ mod tests {
         synced.stop();
         resume_tx.send(()).expect("resume queued drain");
 
-        let attempted_remote_write = stall.request_arrived_within(Duration::from_secs(2));
+        let deadline = std::time::Instant::now() + Duration::from_secs(20);
+        let attempted_remote_write = loop {
+            if stall
+                .try_request()
+                .expect("VSS listener must stay available")
+            {
+                break true;
+            }
+            match drain_done_rx.try_recv() {
+                Ok(()) => break false,
+                Err(mpsc::TryRecvError::Empty) => {}
+                Err(mpsc::TryRecvError::Disconnected) => {
+                    panic!("drain thread exited without reporting completion")
+                }
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "queued drain produced neither completion nor remote I/O"
+            );
+            std::thread::sleep(Duration::from_millis(10));
+        };
         stall.cut();
         drainer.join().expect("drainer thread");
 
