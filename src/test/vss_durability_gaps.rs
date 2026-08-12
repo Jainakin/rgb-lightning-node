@@ -110,6 +110,10 @@ mod tests {
                 .expect("VSS request must arrive");
         }
 
+        fn request_arrived_within(&self, timeout: Duration) -> bool {
+            self.arrived.recv_timeout(timeout).is_ok()
+        }
+
         fn cut(&self) {
             self.cut.store(true, Ordering::Release);
         }
@@ -265,5 +269,55 @@ mod tests {
              fence can be released (and re-acquired by another instance) \
              before this put lands, breaking single-writer"
         );
+    }
+
+    /// A retry drain that passed its initial admission check before shutdown
+    /// must not start a remote mutation after `stop()` has returned.
+    #[test]
+    fn queued_drain_must_not_run_after_stop() {
+        let dir = tempfile::tempdir().expect("tempdir").keep();
+        let local = Arc::new(SeaOrmKvStore::from_connection(open_sqlite(&dir)));
+        let pending_key = vss_key("", "", "queued");
+        local
+            .write("", "", "queued", b"v1".to_vec())
+            .expect("value");
+        local
+            .write(PENDING_NS, "", &pending_key, vec![1, b'v', b'1'])
+            .expect("pending row");
+
+        let stall = StallingVss::start();
+        let (signing_key, store_id) = generate_test_keys();
+        let remote =
+            Arc::new(VssKvStore::new(stall.url(), store_id, signing_key).expect("vss store"));
+        let synced = Arc::new(SyncedKvStore::with_vss(local, remote));
+
+        let (at_gate_tx, at_gate_rx) = mpsc::channel();
+        let (resume_tx, resume_rx) = mpsc::channel();
+        let resume_rx = std::sync::Mutex::new(resume_rx);
+        synced.set_before_drain_gate_hook(Arc::new(move || {
+            at_gate_tx.send(()).expect("signal drain admission");
+            resume_rx.lock().unwrap().recv().expect("resume drain");
+        }));
+
+        let drainer = {
+            let synced = Arc::clone(&synced);
+            std::thread::spawn(move || synced.drain_pending())
+        };
+        at_gate_rx
+            .recv_timeout(Duration::from_secs(5))
+            .expect("drain must reach the shutdown gate");
+
+        synced.stop();
+        resume_tx.send(()).expect("resume queued drain");
+
+        let attempted_remote_write = stall.request_arrived_within(Duration::from_secs(2));
+        stall.cut();
+        drainer.join().expect("drainer thread");
+
+        assert!(
+            !attempted_remote_write,
+            "a queued retry drain started a remote mutation after stop() returned"
+        );
+        assert_eq!(synced.pending_remote_writes(), 1);
     }
 }

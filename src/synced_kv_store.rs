@@ -98,6 +98,8 @@ pub struct SyncedKvStore {
     stopped: std::sync::atomic::AtomicBool,
     #[cfg(feature = "vss")]
     drain_gate: std::sync::Mutex<()>,
+    #[cfg(all(test, feature = "vss"))]
+    before_drain_gate_hook: std::sync::Mutex<Option<Arc<dyn Fn() + Send + Sync + 'static>>>,
 }
 
 impl SyncedKvStore {
@@ -117,6 +119,8 @@ impl SyncedKvStore {
             stopped: std::sync::atomic::AtomicBool::new(false),
             #[cfg(feature = "vss")]
             drain_gate: std::sync::Mutex::new(()),
+            #[cfg(all(test, feature = "vss"))]
+            before_drain_gate_hook: std::sync::Mutex::new(None),
         }
     }
 
@@ -189,6 +193,21 @@ impl SyncedKvStore {
             key_locks: std::sync::Mutex::new(std::collections::HashMap::new()),
             stopped: std::sync::atomic::AtomicBool::new(false),
             drain_gate: std::sync::Mutex::new(()),
+            #[cfg(test)]
+            before_drain_gate_hook: std::sync::Mutex::new(None),
+        }
+    }
+
+    #[cfg(all(test, feature = "vss"))]
+    pub(crate) fn set_before_drain_gate_hook(&self, hook: Arc<dyn Fn() + Send + Sync + 'static>) {
+        *self.before_drain_gate_hook.lock().unwrap() = Some(hook);
+    }
+
+    #[cfg(all(test, feature = "vss"))]
+    fn run_before_drain_gate_hook(&self) {
+        let hook = self.before_drain_gate_hook.lock().unwrap().clone();
+        if let Some(hook) = hook {
+            hook();
         }
     }
 
@@ -405,7 +424,15 @@ impl SyncedKvStore {
         if self.stopped.load(std::sync::atomic::Ordering::Acquire) {
             return;
         }
+        #[cfg(test)]
+        self.run_before_drain_gate_hook();
         let _gate = self.drain_gate.lock().unwrap();
+        // A drain may have observed the store as running and then waited behind
+        // stop(). Re-check under the gate so no remote mutation can begin after
+        // shutdown has released the VSS fence.
+        if self.stopped.load(std::sync::atomic::Ordering::Acquire) {
+            return;
+        }
         // Snapshot without removing: entries leave the queue only once VSS
         // confirms them, so nothing is ever in flight outside the map.
         let snapshot: Vec<(String, Option<Vec<u8>>)> = {
