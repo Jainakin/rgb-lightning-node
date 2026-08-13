@@ -773,6 +773,29 @@ mod tests {
     /// A failed unlock must roll back what it acquired: the VSS fence is
     /// released and the changing-state flag is cleared, so a retry (failed or
     /// successful) is never wedged behind a stranded fence.
+    fn select_electrum_backend(payload: &mut crate::routes::UnlockRequest) {
+        payload.bitcoind_rpc_username = None;
+        payload.bitcoind_rpc_password = None;
+        payload.bitcoind_rpc_host = None;
+        payload.bitcoind_rpc_port = None;
+    }
+
+    async fn unlock_with_electrum_backend(node_address: std::net::SocketAddr, password: &str) {
+        let mut payload = crate::test::unlock_req(password);
+        select_electrum_backend(&mut payload);
+        let res = reqwest::Client::new()
+            .post(format!("http://{node_address}/unlock"))
+            .json(&payload)
+            .send()
+            .await
+            .unwrap();
+        crate::test::check_response_is_ok(res)
+            .await
+            .json::<crate::routes::EmptyResponse>()
+            .await
+            .unwrap();
+    }
+
     #[serial_test::serial]
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
     async fn vss_failed_unlock_releases_fence_and_allows_retry() {
@@ -805,6 +828,7 @@ mod tests {
 
         // Unlock against an unreachable indexer: fails after the fence acquire.
         let mut payload = crate::test::unlock_req(password);
+        select_electrum_backend(&mut payload);
         payload.indexer_url = Some("127.0.0.1:1".to_string());
         let client = reqwest::Client::new();
         for attempt in 1..=2 {
@@ -832,7 +856,7 @@ mod tests {
         }
 
         // With the fence rolled back a retry with good parameters succeeds.
-        crate::test::unlock(node_address, password).await;
+        unlock_with_electrum_backend(node_address, password).await;
 
         crate::test::shutdown(&[node_address]).await;
     }
@@ -869,9 +893,9 @@ mod tests {
         let password = "vss_lock_release_fence";
         crate::test::init(node_address, password, None).await;
 
-        crate::test::unlock(node_address, password).await;
+        unlock_with_electrum_backend(node_address, password).await;
         crate::test::lock(node_address).await;
-        crate::test::unlock(node_address, password).await;
+        unlock_with_electrum_backend(node_address, password).await;
 
         crate::test::shutdown(&[node_address]).await;
     }
