@@ -234,9 +234,11 @@ mod tests {
     }
 
     /// When `stop()` returns the caller releases the VSS single-writer fence,
-    /// so no remote mutation may still be in flight. On `dev` `stop()` only
-    /// waits out drains: a direct write blocked inside its VSS put is ignored
-    /// and can land after another instance owns the store.
+    /// so no remote mutation may still be in flight. Event-ordered: a correct
+    /// `stop()` blocks on the drain gate the in-flight write holds and can
+    /// only return after the connection is cut; a `stop()` that ignores the
+    /// in-flight put acquires the free gate and returns inside the
+    /// observation window.
     #[test]
     fn stop_must_wait_for_inflight_remote_mutation() {
         let dir = tempfile::tempdir().expect("tempdir").keep();
@@ -253,22 +255,34 @@ mod tests {
         };
         stall.wait_for_request();
 
+        let (at_gate_tx, at_gate_rx) = mpsc::channel();
+        synced.set_before_stop_gate_hook(Arc::new(move || {
+            let _ = at_gate_tx.send(());
+        }));
+        let (stop_done_tx, stop_done_rx) = mpsc::channel();
         let stopper = {
             let synced = Arc::clone(&synced);
-            std::thread::spawn(move || synced.stop())
+            std::thread::spawn(move || {
+                synced.stop();
+                let _ = stop_done_tx.send(());
+            })
         };
 
-        // Correct behavior: stop() blocks until the in-flight put resolves,
-        // so this join can only complete after the connection is cut below.
-        std::thread::sleep(Duration::from_secs(2));
-        let stop_returned_early = stopper.is_finished();
+        at_gate_rx
+            .recv_timeout(Duration::from_secs(10))
+            .expect("stop must reach the gate");
+        // A stop() blocked on the held gate cannot complete until the cut
+        // below, so this window can only ever observe a stop() that skipped
+        // the in-flight put; the wait it bounds is an uncontended lock plus a
+        // channel send.
+        let stopped_early = stop_done_rx.recv_timeout(Duration::from_secs(10)).is_ok();
 
         stall.cut();
         stopper.join().expect("stopper thread");
         let _ = writer.join().expect("writer thread");
 
         assert!(
-            !stop_returned_early,
+            !stopped_early,
             "stop() returned while a remote mutation was in flight: the VSS \
              fence can be released (and re-acquired by another instance) \
              before this put lands, breaking single-writer"

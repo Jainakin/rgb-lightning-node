@@ -96,6 +96,8 @@ pub struct SyncedKvStore {
     drain_gate: std::sync::Mutex<()>,
     #[cfg(all(test, feature = "vss"))]
     before_drain_gate_hook: std::sync::Mutex<Option<Arc<dyn Fn() + Send + Sync + 'static>>>,
+    #[cfg(all(test, feature = "vss"))]
+    before_stop_gate_hook: std::sync::Mutex<Option<Arc<dyn Fn() + Send + Sync + 'static>>>,
 }
 
 impl SyncedKvStore {
@@ -117,6 +119,8 @@ impl SyncedKvStore {
             drain_gate: std::sync::Mutex::new(()),
             #[cfg(all(test, feature = "vss"))]
             before_drain_gate_hook: std::sync::Mutex::new(None),
+            #[cfg(all(test, feature = "vss"))]
+            before_stop_gate_hook: std::sync::Mutex::new(None),
         }
     }
 
@@ -191,6 +195,8 @@ impl SyncedKvStore {
             drain_gate: std::sync::Mutex::new(()),
             #[cfg(test)]
             before_drain_gate_hook: std::sync::Mutex::new(None),
+            #[cfg(test)]
+            before_stop_gate_hook: std::sync::Mutex::new(None),
         }
     }
 
@@ -202,6 +208,19 @@ impl SyncedKvStore {
     #[cfg(all(test, feature = "vss"))]
     fn run_before_drain_gate_hook(&self) {
         let hook = self.before_drain_gate_hook.lock().unwrap().clone();
+        if let Some(hook) = hook {
+            hook();
+        }
+    }
+
+    #[cfg(all(test, feature = "vss"))]
+    pub(crate) fn set_before_stop_gate_hook(&self, hook: Arc<dyn Fn() + Send + Sync + 'static>) {
+        *self.before_stop_gate_hook.lock().unwrap() = Some(hook);
+    }
+
+    #[cfg(all(test, feature = "vss"))]
+    fn run_before_stop_gate_hook(&self) {
+        let hook = self.before_stop_gate_hook.lock().unwrap().clone();
         if let Some(hook) = hook {
             hook();
         }
@@ -223,6 +242,8 @@ impl SyncedKvStore {
     pub(crate) fn stop(&self) {
         self.stopped
             .store(true, std::sync::atomic::Ordering::Release);
+        #[cfg(test)]
+        self.run_before_stop_gate_hook();
         drop(self.drain_gate.lock().unwrap());
     }
 
