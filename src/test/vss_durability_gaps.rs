@@ -348,4 +348,22 @@ mod tests {
         );
         assert_eq!(synced.pending_remote_writes(), 1);
     }
+
+    /// `psbt` and `pending_funding` writers currently unwrap the write result,
+    /// so these namespaces must keep acking during a VSS outage until the
+    /// funding state machine handles the errors.
+    #[test]
+    fn psbt_and_pending_funding_stay_best_effort_during_outage() {
+        let dir = tempfile::tempdir().expect("tempdir").keep();
+        let local = Arc::new(SeaOrmKvStore::from_connection(open_sqlite(&dir)));
+        let synced = SyncedKvStore::with_vss(local, unreachable_vss());
+
+        synced
+            .write("psbt", "", "funding_txid", b"psbt".to_vec())
+            .expect("psbt write must ack during an outage");
+        synced
+            .write("pending_funding", "", "channel_id", b"txid".to_vec())
+            .expect("pending_funding write must ack during an outage");
+        assert_eq!(synced.pending_remote_writes(), 2);
+    }
 }

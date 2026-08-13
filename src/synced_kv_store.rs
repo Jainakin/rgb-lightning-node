@@ -56,10 +56,6 @@ const PENDING_DRAIN_BATCH: usize = 16;
 #[cfg(feature = "vss")]
 pub(crate) const RGB_SENDER_FUNDING_NAMESPACE: &str = "rgb_sender_funding";
 #[cfg(feature = "vss")]
-pub(crate) const PSBT_NAMESPACE: &str = "psbt";
-#[cfg(feature = "vss")]
-pub(crate) const PENDING_FUNDING_NAMESPACE: &str = "pending_funding";
-#[cfg(feature = "vss")]
 pub(crate) const RGB_PRIMARY_NAMESPACE: &str = "rgb";
 #[cfg(feature = "vss")]
 pub(crate) const RGB_FUNDING_ACCEPTANCE_NAMESPACE: &str = "funding_acceptance";
@@ -291,11 +287,13 @@ impl SyncedKvStore {
     /// These records define channel-funding recovery boundaries. With VSS configured, callers may
     /// not advance the protocol after only a local acknowledgement. Other keys remain locally
     /// authoritative and use the durable retry queue for eventual VSS convergence.
+    ///
+    /// `psbt` and `pending_funding` stay best-effort for now: their current writers unwrap the
+    /// result, so failing closed would panic the event handler during a VSS outage. They join
+    /// this set together with the funding state machine that handles the errors.
     #[cfg(feature = "vss")]
     fn requires_remote_durability(primary_namespace: &str, secondary_namespace: &str) -> bool {
         (primary_namespace == RGB_SENDER_FUNDING_NAMESPACE && secondary_namespace.is_empty())
-            || (primary_namespace == PSBT_NAMESPACE && secondary_namespace.is_empty())
-            || (primary_namespace == PENDING_FUNDING_NAMESPACE && secondary_namespace.is_empty())
             || (primary_namespace == RGB_PRIMARY_NAMESPACE
                 && secondary_namespace == RGB_FUNDING_ACCEPTANCE_NAMESPACE)
     }
