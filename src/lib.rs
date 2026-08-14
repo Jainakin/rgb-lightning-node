@@ -45,6 +45,7 @@ mod ldk_chain_backend;
 mod node;
 mod rgb;
 mod rgb_file_transfer;
+mod rgb_import;
 mod routes;
 mod runtime;
 mod sdk;
