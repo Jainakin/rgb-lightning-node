@@ -23,6 +23,7 @@ use crate::ldk::{
 #[cfg(feature = "vss")]
 use crate::ldk::{derive_vss_identity, derive_vss_identity_from_key_source};
 use crate::rgb::{check_rgb_proxy_endpoint, get_rgb_channel_info_optional};
+use crate::rgb_import;
 use crate::signer::{
     read_key_source_file, validate_bootstrap_payload, validate_key_source_matches_bootstrap,
     write_key_source_file, BootstrapData, KeySourceFile, SUPPORTED_SIGNER_API_LEVEL,
@@ -38,7 +39,6 @@ use crate::utils::{
     UserOnionMessageContents,
 };
 use amplify::{map, s};
-use base64::{engine::general_purpose, Engine as _};
 use bitcoin::hashes::sha256::Hash as Sha256;
 use bitcoin::hashes::Hash;
 use bitcoin::hex::DisplayHex;
@@ -82,8 +82,7 @@ use rgb_lib::wallet::{
 use rgb_lib::{
     bdk_wallet::keys::bip39::Mnemonic,
     keys::{generate_keys, WitnessVersion},
-    ConsignmentExt, ContractId, Error as RgbLibError, FileContent, RgbContract, RgbTransfer,
-    RgbTransport,
+    ContractId, RgbTransport,
 };
 use std::collections::HashMap;
 use std::net::ToSocketAddrs;
@@ -268,19 +267,6 @@ pub(crate) struct ImportRgbContractData {
     pub(crate) asset_id: String,
     pub(crate) already_imported: bool,
     pub(crate) metadata: AssetMetadataData,
-}
-
-const MAX_RGB_BASE64_CHARACTERS: usize = 16 * 1024 * 1024;
-
-fn decode_rgb_base64(value: String, kind: &str) -> Result<Vec<u8>, APIError> {
-    if value.is_empty() || value.len() > MAX_RGB_BASE64_CHARACTERS {
-        return Err(APIError::InvalidRgbContract(format!(
-            "{kind} payload size is invalid"
-        )));
-    }
-    general_purpose::STANDARD
-        .decode(value)
-        .map_err(|error| APIError::InvalidRgbContract(format!("invalid base64: {error}")))
 }
 
 pub(crate) struct BtcBalance {
@@ -1673,44 +1659,20 @@ pub(crate) async fn import_rgb_transfer_consignment(
     state: Arc<AppState>,
     request: ImportRgbTransferConsignmentRequestData,
 ) -> Result<ImportRgbTransferConsignmentData, APIError> {
-    if request.consignment_base64.is_empty()
-        || request.consignment_base64.len() > MAX_RGB_BASE64_CHARACTERS
-    {
-        return Err(APIError::InvalidRgbConsignment(
-            "transfer consignment payload size is invalid".to_string(),
-        ));
-    }
-    let consignment_bytes = general_purpose::STANDARD
-        .decode(request.consignment_base64)
-        .map_err(|error| APIError::InvalidRgbConsignment(format!("invalid base64: {error}")))?;
-    let consignment = RgbTransfer::load(&consignment_bytes[..])
-        .map_err(|error| APIError::InvalidRgbConsignment(error.to_string()))?;
-    let asset_id = consignment.contract_id().to_string();
-
-    if let Some(expected_asset_id) = request.expected_asset_id {
-        let expected_contract_id = ContractId::from_str(&expected_asset_id)
-            .map_err(|_| APIError::InvalidAssetID(expected_asset_id.clone()))?;
-        if expected_contract_id != consignment.contract_id() {
-            return Err(APIError::InvalidRgbConsignment(format!(
-                "expected asset id {expected_asset_id}, got {asset_id}"
-            )));
-        }
-    }
-
-    let guard = check_unlocked(&state).await?;
-    let unlocked_state = guard.as_ref().unwrap();
-    let unlocked_state_copy = unlocked_state.clone();
-    let offchain_txid = request.offchain_txid;
-    let (metadata, already_imported) = tokio::task::spawn_blocking(move || {
-        unlocked_state_copy.rgb_import_transfer_consignment(consignment, offchain_txid)
-    })
-    .await
-    .map_err(|error| APIError::Unexpected(format!("transfer import task failed: {error}")))??;
+    let imported = rgb_import::import_rgb_transfer_consignment(
+        state,
+        rgb_import::ImportRgbTransferConsignmentRequestData {
+            consignment_base64: request.consignment_base64,
+            offchain_txid: request.offchain_txid,
+            expected_asset_id: request.expected_asset_id,
+        },
+    )
+    .await?;
 
     Ok(ImportRgbTransferConsignmentData {
-        asset_id,
-        already_imported,
-        metadata: asset_metadata_data_from_metadata(metadata),
+        asset_id: imported.asset_id,
+        already_imported: imported.already_imported,
+        metadata: asset_metadata_data_from_metadata(imported.metadata),
     })
 }
 
@@ -1718,36 +1680,19 @@ pub(crate) async fn import_rgb_contract(
     state: Arc<AppState>,
     request: ImportRgbContractRequestData,
 ) -> Result<ImportRgbContractData, APIError> {
-    let expected_contract_id = ContractId::from_str(&request.expected_asset_id)
-        .map_err(|_| APIError::InvalidAssetID(request.expected_asset_id.clone()))?;
-    let contract_bytes = decode_rgb_base64(request.contract_base64, "contract")?;
-    let contract = RgbContract::load(&contract_bytes[..])
-        .map_err(|error| APIError::InvalidRgbContract(error.to_string()))?;
-    let asset_id = contract.contract_id().to_string();
-    if expected_contract_id != contract.contract_id() {
-        return Err(APIError::InvalidRgbContract(format!(
-            "expected asset id {}, got {asset_id}",
-            request.expected_asset_id
-        )));
-    }
-
-    let guard = check_unlocked(&state).await?;
-    let unlocked_state = guard.as_ref().unwrap().clone();
-    let (metadata, already_imported) =
-        tokio::task::spawn_blocking(move || unlocked_state.rgb_import_asset_contract(contract))
-            .await
-            .map_err(|error| APIError::Unexpected(format!("contract import task failed: {error}")))?
-            .map_err(|error| match error {
-                RgbLibError::InvalidConsignment => {
-                    APIError::InvalidRgbContract("contract validation failed".to_string())
-                }
-                other => APIError::from(other),
-            })?;
+    let imported = rgb_import::import_rgb_contract(
+        state,
+        rgb_import::ImportRgbContractRequestData {
+            contract_base64: request.contract_base64,
+            expected_asset_id: request.expected_asset_id,
+        },
+    )
+    .await?;
 
     Ok(ImportRgbContractData {
-        asset_id,
-        already_imported,
-        metadata: asset_metadata_data_from_metadata(metadata),
+        asset_id: imported.asset_id,
+        already_imported: imported.already_imported,
+        metadata: asset_metadata_data_from_metadata(imported.metadata),
     })
 }
 
@@ -4513,7 +4458,7 @@ pub(crate) async fn list_transfers(
     }
     let filter = match asset_id {
         Some(asset_id) => rgb_lib::wallet::AssetFilter::Id(asset_id),
-        None => rgb_lib::wallet::AssetFilter::Any,
+        None => rgb_lib::wallet::AssetFilter::AnyOrNone,
     };
     Ok(unlocked_state
         .rgb_list_transfers(filter, txid)?
@@ -4574,26 +4519,6 @@ mod tests {
     use std::sync::{Arc, Mutex, RwLock};
     use tokio::sync::Mutex as TokioMutex;
     use tokio_util::sync::CancellationToken;
-
-    #[test]
-    fn rgb_contract_base64_validation_rejects_empty_malformed_and_oversized_payloads() {
-        assert!(matches!(
-            decode_rgb_base64(String::new(), "contract"),
-            Err(APIError::InvalidRgbContract(_))
-        ));
-        assert!(matches!(
-            decode_rgb_base64("not base64".to_string(), "contract"),
-            Err(APIError::InvalidRgbContract(_))
-        ));
-        assert!(matches!(
-            decode_rgb_base64("A".repeat(MAX_RGB_BASE64_CHARACTERS + 1), "contract"),
-            Err(APIError::InvalidRgbContract(_))
-        ));
-        assert_eq!(
-            decode_rgb_base64("YWJj".to_string(), "contract").unwrap(),
-            b"abc"
-        );
-    }
 
     #[test]
     fn verify_message_signature_accepts_known_lightning_vector_and_rejects_tampering() {

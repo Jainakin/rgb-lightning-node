@@ -22,6 +22,7 @@ mod indexer;
 mod kv_store;
 mod ldk;
 mod rgb;
+mod rgb_import;
 mod routes;
 mod runtime;
 mod signer;
@@ -62,6 +63,7 @@ use crate::args::UserArgs;
 use crate::auth::conditional_auth_middleware;
 use crate::error::AppError;
 use crate::ldk::stop_ldk;
+use crate::rgb_import::MAX_RGB_IMPORT_BODY_BYTES;
 #[cfg(feature = "remote-signer")]
 use crate::routes::init_external_signer;
 use crate::routes::{
@@ -160,9 +162,13 @@ pub(crate) async fn app(args: UserArgs) -> Result<(Router, Arc<AppState>), AppEr
         .route("/getswap", post(get_swap))
         .route(
             "/importrgbtransferconsignment",
-            post(import_rgb_transfer_consignment),
+            post(import_rgb_transfer_consignment)
+                .layer(RequestBodyLimitLayer::new(MAX_RGB_IMPORT_BODY_BYTES)),
         )
-        .route("/importrgbcontract", post(import_rgb_contract))
+        .route(
+            "/importrgbcontract",
+            post(import_rgb_contract).layer(RequestBodyLimitLayer::new(MAX_RGB_IMPORT_BODY_BYTES)),
+        )
         .route("/inflate", post(inflate))
         .route("/init", post(init))
         .route("/invoicestatus", post(invoice_status))

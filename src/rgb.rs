@@ -225,16 +225,16 @@ impl UnlockedAppState {
         offchain_txid: String,
     ) -> Result<(Metadata, bool), RgbLibError> {
         let contract_id = consignment.contract_id();
-        match self.rgb_get_asset_metadata(contract_id) {
-            Ok(metadata) => return Ok((metadata, true)),
-            Err(RgbLibError::AssetNotFound { .. }) => {}
+        let already_imported = match self.rgb_get_asset_metadata(contract_id) {
+            Ok(_) => true,
+            Err(RgbLibError::AssetNotFound { .. }) => false,
             Err(error) => return Err(error),
-        }
+        };
 
         self.rgb_wallet_wrapper
             .save_new_asset(consignment, offchain_txid)?;
         let metadata = self.rgb_get_asset_metadata(contract_id)?;
-        Ok((metadata, false))
+        Ok((metadata, already_imported))
     }
 
     pub(crate) fn rgb_import_asset_contract(

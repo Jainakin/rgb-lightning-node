@@ -2240,3 +2240,43 @@ impl From<SdkPostAssetMediaResponse> for JsonPostAssetMediaResponse {
 pub(crate) struct JsonChannelIdResponse {
     pub channel_id: String,
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const ASSET_ID: &str = "rgb:CJkb4YZw-jRiz2sk-~PARPio-wtVYI1c-XAEYCqO-wTfvRZ8";
+
+    #[test]
+    fn rgb_contract_import_request_uses_the_documented_json_shape() {
+        let json = format!(r#"{{"contract_base64":"AA==","expected_asset_id":"{ASSET_ID}"}}"#);
+        let request: JsonImportRgbContractRequest = serde_json::from_str(&json).unwrap();
+        let typed = ImportRgbContractRequest::try_from(request).unwrap();
+
+        assert_eq!(typed.contract_base64, "AA==");
+        assert_eq!(typed.expected_asset_id.to_string(), ASSET_ID);
+    }
+
+    #[test]
+    fn rgb_transfer_import_request_preserves_optional_asset_verification() {
+        let json = format!(
+            r#"{{"consignment_base64":"AA==","offchain_txid":"offchain-id","expected_asset_id":"{ASSET_ID}"}}"#
+        );
+        let request: JsonImportRgbTransferConsignmentRequest = serde_json::from_str(&json).unwrap();
+        let typed = ImportRgbTransferConsignmentRequest::try_from(request).unwrap();
+
+        assert_eq!(typed.consignment_base64, "AA==");
+        assert_eq!(typed.offchain_txid, "offchain-id");
+        assert_eq!(typed.expected_asset_id.unwrap().to_string(), ASSET_ID);
+    }
+
+    #[test]
+    fn rgb_import_request_rejects_an_invalid_expected_asset_id() {
+        let request = JsonImportRgbContractRequest {
+            contract_base64: "AA==".to_string(),
+            expected_asset_id: "not-an-asset-id".to_string(),
+        };
+
+        assert!(ImportRgbContractRequest::try_from(request).is_err());
+    }
+}

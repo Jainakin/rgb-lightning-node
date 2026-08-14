@@ -1,12 +1,13 @@
 use crate::ldk::write_rgb_payment_info_file;
-use crate::sdk;
+use crate::rgb_import::{
+    self, ImportRgbContractRequestData, ImportRgbTransferConsignmentRequestData,
+};
 use amplify::{map, s};
 use axum::{
     extract::{Multipart, State},
     Json,
 };
 use axum_extra::extract::WithRejection;
-use base64::{engine::general_purpose, Engine as _};
 use biscuit_auth::Biscuit;
 use bitcoin::hashes::sha256::{self, Hash as Sha256};
 use bitcoin::hashes::Hash;
@@ -59,8 +60,7 @@ use rgb_lib::{
         TokenLight as RgbLibTokenLight, WitnessData as RgbLibWitnessData,
     },
     AssetSchema as RgbLibAssetSchema, Assignment as RgbLibAssignment,
-    BitcoinNetwork as RgbLibNetwork, ConsignmentExt, ContractId, FileContent, RgbTransfer,
-    RgbTransport,
+    BitcoinNetwork as RgbLibNetwork, ContractId, RgbTransport,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -1918,56 +1918,6 @@ fn asset_metadata_response_from_metadata(metadata: RgbLibMetadata) -> AssetMetad
     }
 }
 
-fn asset_metadata_response_from_data(metadata: sdk::AssetMetadataData) -> AssetMetadataResponse {
-    AssetMetadataResponse {
-        asset_schema: metadata.asset_schema.into(),
-        initial_supply: metadata.initial_supply,
-        max_supply: metadata.max_supply,
-        known_circulating_supply: metadata.known_circulating_supply,
-        timestamp: metadata.timestamp,
-        name: metadata.name,
-        precision: metadata.precision,
-        ticker: metadata.ticker,
-        details: metadata.details,
-        token: metadata.token.map(|token| Token {
-            index: token.index,
-            ticker: token.ticker,
-            name: token.name,
-            details: token.details,
-            embedded_media: token.embedded_media.map(|media| EmbeddedMedia {
-                mime: media.mime,
-                data: media.data,
-            }),
-            media: token.media.map(|media| Media {
-                file_path: media.file_path,
-                digest: media.digest,
-                mime: media.mime,
-            }),
-            attachments: token
-                .attachments
-                .into_iter()
-                .map(|(index, media)| {
-                    (
-                        index,
-                        Media {
-                            file_path: media.file_path,
-                            digest: media.digest,
-                            mime: media.mime,
-                        },
-                    )
-                })
-                .collect(),
-            reserves: token.reserves.map(|reserves| ProofOfReserves {
-                utxo: reserves.utxo,
-                proof: reserves.proof,
-            }),
-        }),
-        unspent_link_right_outpoint: metadata.unspent_link_right_outpoint,
-        linked_from_asset_id: metadata.linked_from_asset_id,
-        linked_to_asset_id: metadata.linked_to_asset_id,
-    }
-}
-
 pub(crate) async fn import_rgb_transfer_consignment(
     State(state): State<Arc<AppState>>,
     WithRejection(Json(payload), _): WithRejection<
@@ -1975,37 +1925,20 @@ pub(crate) async fn import_rgb_transfer_consignment(
         APIError,
     >,
 ) -> Result<Json<ImportRgbTransferConsignmentResponse>, APIError> {
-    let consignment_bytes = general_purpose::STANDARD
-        .decode(payload.consignment_base64)
-        .map_err(|error| APIError::InvalidRgbConsignment(format!("invalid base64: {error}")))?;
-    let consignment = RgbTransfer::load(&consignment_bytes[..])
-        .map_err(|error| APIError::InvalidRgbConsignment(error.to_string()))?;
-    let asset_id = consignment.contract_id().to_string();
-
-    if let Some(expected_asset_id) = payload.expected_asset_id {
-        let expected_contract_id = ContractId::from_str(&expected_asset_id)
-            .map_err(|_| APIError::InvalidAssetID(expected_asset_id.clone()))?;
-        if expected_contract_id != consignment.contract_id() {
-            return Err(APIError::InvalidRgbConsignment(format!(
-                "expected asset id {expected_asset_id}, got {asset_id}"
-            )));
-        }
-    }
-
-    let guard = state.check_unlocked().await?;
-    let unlocked_state = guard.as_ref().unwrap();
-    let unlocked_state_copy = unlocked_state.clone();
-    let offchain_txid = payload.offchain_txid;
-    let (metadata, already_imported) = tokio::task::spawn_blocking(move || {
-        unlocked_state_copy.rgb_import_transfer_consignment(consignment, offchain_txid)
-    })
-    .await
-    .unwrap()?;
+    let imported = rgb_import::import_rgb_transfer_consignment(
+        state,
+        ImportRgbTransferConsignmentRequestData {
+            consignment_base64: payload.consignment_base64,
+            offchain_txid: payload.offchain_txid,
+            expected_asset_id: payload.expected_asset_id,
+        },
+    )
+    .await?;
 
     Ok(Json(ImportRgbTransferConsignmentResponse {
-        asset_id,
-        already_imported,
-        metadata: asset_metadata_response_from_metadata(metadata),
+        asset_id: imported.asset_id,
+        already_imported: imported.already_imported,
+        metadata: asset_metadata_response_from_metadata(imported.metadata),
     }))
 }
 
@@ -2013,9 +1946,9 @@ pub(crate) async fn import_rgb_contract(
     State(state): State<Arc<AppState>>,
     WithRejection(Json(payload), _): WithRejection<Json<ImportRgbContractRequest>, APIError>,
 ) -> Result<Json<ImportRgbContractResponse>, APIError> {
-    let imported = sdk::import_rgb_contract(
+    let imported = rgb_import::import_rgb_contract(
         state,
-        sdk::ImportRgbContractRequestData {
+        ImportRgbContractRequestData {
             contract_base64: payload.contract_base64,
             expected_asset_id: payload.expected_asset_id,
         },
@@ -2024,7 +1957,7 @@ pub(crate) async fn import_rgb_contract(
     Ok(Json(ImportRgbContractResponse {
         asset_id: imported.asset_id,
         already_imported: imported.already_imported,
-        metadata: asset_metadata_response_from_data(imported.metadata),
+        metadata: asset_metadata_response_from_metadata(imported.metadata),
     }))
 }
 
@@ -3626,7 +3559,7 @@ pub(crate) async fn list_transfers(
     }
     let filter = match payload.asset_id {
         Some(asset_id) => rgb_lib::wallet::AssetFilter::Id(asset_id),
-        None => rgb_lib::wallet::AssetFilter::Any,
+        None => rgb_lib::wallet::AssetFilter::AnyOrNone,
     };
     let raw_transfers = unlocked_state.rgb_list_transfers(filter, payload.txid)?;
 
