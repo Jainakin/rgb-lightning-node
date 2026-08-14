@@ -97,9 +97,10 @@ fn contract_import_roundtrips_through_sdk() {
                 precision: 0,
             })
             .expect("issue mismatched RGB contract");
+        let other_contract_base64 = export_contract_base64(&issuer, &other_asset.asset_id);
         let mismatch = recipient.importrgbcontract(ImportRgbContractRequest {
-            contract_base64,
-            expected_asset_id: other_asset.asset_id.clone(),
+            contract_base64: other_contract_base64,
+            expected_asset_id: issued.asset_id,
         });
         assert!(matches!(mismatch, Err(RlnError::InvalidRequest(_))));
         assert!(matches!(
