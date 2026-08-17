@@ -2,6 +2,65 @@ use super::*;
 
 const TEST_DIR_BASE: &str = "tmp/vss_unreachable_openchannel/";
 
+async fn unlock_electrum_only(node_address: SocketAddr, password: &str) {
+    let payload = UnlockRequest {
+        password: password.to_string(),
+        bitcoind_rpc_username: None,
+        bitcoind_rpc_password: None,
+        bitcoind_rpc_host: None,
+        bitcoind_rpc_port: None,
+        indexer_url: Some(ELECTRUM_URL_REGTEST.to_string()),
+        proxy_endpoint: Some(PROXY_ENDPOINT_LOCAL.to_string()),
+        announce_addresses: vec![],
+        announce_alias: Some(s!("RLN_alias")),
+        gossip_source: None,
+    };
+    let res = reqwest::Client::new()
+        .post(format!("http://{node_address}/unlock"))
+        .json(&payload)
+        .send()
+        .await
+        .unwrap();
+    check_response_is_ok(res)
+        .await
+        .json::<EmptyResponse>()
+        .await
+        .unwrap();
+}
+
+async fn start_node_electrum_only(
+    node_test_dir: &str,
+    node_peer_port: u16,
+) -> (SocketAddr, String) {
+    let node_address = start_daemon(node_test_dir, node_peer_port, None, false).await;
+    let password = format!("{node_test_dir}.{node_peer_port}");
+    init(node_address, &password, None).await;
+    unlock_electrum_only(node_address, &password).await;
+    wait_for_peer_port_ready(node_peer_port).await;
+    (node_address, password)
+}
+
+async fn start_vss_node_electrum_only(
+    node_test_dir: &str,
+    node_peer_port: u16,
+    vss_url: &str,
+) -> (SocketAddr, String) {
+    let node_address = start_daemon_with_vss(
+        node_test_dir,
+        node_peer_port,
+        false,
+        Some(vss_url.into()),
+        false,
+    )
+    .await;
+    let password = format!("{node_test_dir}.{node_peer_port}");
+    init(node_address, &password, None).await;
+    clear_vss_fence(node_address, &password).await;
+    unlock_electrum_only(node_address, &password).await;
+    wait_for_peer_port_ready(node_peer_port).await;
+    (node_address, password)
+}
+
 /// A node whose configured VSS server is unreachable must refuse a channel
 /// open with a clear error instead of accepting it and leaving the channel
 /// silently stuck in `Opening`; once VSS is reachable again the same open
@@ -25,16 +84,9 @@ async fn openchannel_refused_while_vss_unreachable_inner() {
     let test_dir_node2 = format!("{TEST_DIR_BASE}node2");
 
     let proxy = super::vss_offline_force_close::VssProxy::start();
-    let (node1_addr, _, _) = start_node_with_vss(
-        &test_dir_node1,
-        NODE1_PEER_PORT,
-        false,
-        &proxy.url(),
-        None,
-        false,
-    )
-    .await;
-    let (node2_addr, _) = start_node(&test_dir_node2, NODE2_PEER_PORT, false).await;
+    let (node1_addr, _) =
+        start_vss_node_electrum_only(&test_dir_node1, NODE1_PEER_PORT, &proxy.url()).await;
+    let (node2_addr, _) = start_node_electrum_only(&test_dir_node2, NODE2_PEER_PORT).await;
 
     fund_and_create_utxos(node1_addr, None).await;
     fund_and_create_utxos(node2_addr, None).await;
