@@ -1,5 +1,56 @@
 use super::*;
 
+#[test]
+fn rgb_funding_recovery_mapping_preserves_typed_state() {
+    let mapped = map_rgb_funding_recovery(crate::ldk::RgbFundingRecovery {
+        role: crate::ldk::RgbFundingRecoveryRole::Receiver,
+        funding_txid: "0000000000000000000000000000000000000000000000000000000000000000"
+            .to_string(),
+        temporary_channel_id: "01".repeat(32),
+        final_channel_id: Some("02".repeat(32)),
+        stage: crate::ldk::RgbSenderFundingStage::RetryRequired,
+        channel_is_durable: false,
+        transaction_is_known: None,
+        observation_error: Some("indexer unavailable".to_string()),
+        required_action: crate::ldk::RgbFundingRecoveryRequiredAction::ManualChannelStateRecovery,
+    })
+    .unwrap();
+
+    assert!(matches!(mapped.role, RgbFundingRecoveryRole::Receiver));
+    assert!(matches!(
+        mapped.stage,
+        RgbFundingRecoveryStage::RetryRequired
+    ));
+    assert!(matches!(
+        mapped.required_action,
+        RgbFundingRecoveryRequiredAction::ManualChannelStateRecovery
+    ));
+    assert_eq!(mapped.temporary_channel_id.0, [1; 32]);
+    assert_eq!(mapped.final_channel_id.unwrap().0, [2; 32]);
+    assert_eq!(
+        mapped.observation_error.as_deref(),
+        Some("indexer unavailable")
+    );
+}
+
+#[test]
+fn rgb_funding_recovery_mapping_rejects_invalid_channel_ids() {
+    let result = map_rgb_funding_recovery(crate::ldk::RgbFundingRecovery {
+        role: crate::ldk::RgbFundingRecoveryRole::Sender,
+        funding_txid: "0000000000000000000000000000000000000000000000000000000000000000"
+            .to_string(),
+        temporary_channel_id: "01".to_string(),
+        final_channel_id: None,
+        stage: crate::ldk::RgbSenderFundingStage::Preparing,
+        channel_is_durable: false,
+        transaction_is_known: None,
+        observation_error: None,
+        required_action: crate::ldk::RgbFundingRecoveryRequiredAction::AutomaticReconciliation,
+    });
+
+    assert!(matches!(result, Err(RlnError::Internal(_))));
+}
+
 #[cfg(test)]
 mod uniffi_smoke_tests {
     use super::*;
@@ -30,6 +81,17 @@ mod uniffi_smoke_tests {
         assert!(matches!(payment, Err(RlnError::NotInitialized(_))));
         let swap = sdk_get_swap(lightning::types::payment::PaymentHash([0u8; 32]), true);
         assert!(matches!(swap, Err(RlnError::NotInitialized(_))));
+        let recovery_node = SdkNode {
+            handle: crate::NodeHandle::from_app_state(mock_locked_state()),
+        };
+        let recoveries = recovery_node.list_rgb_funding_recoveries();
+        assert!(matches!(recoveries, Err(RlnError::NotInitialized(_))));
+        let funding_txid =
+            Txid::from_str("0000000000000000000000000000000000000000000000000000000000000000")
+                .unwrap();
+        let recovery = recovery_node
+            .resolve_rgb_funding_recovery(funding_txid, RgbFundingRecoveryAction::Recheck);
+        assert!(matches!(recovery, Err(RlnError::NotInitialized(_))));
         let bootstrap = SdkExternalSignerBootstrap {
             node_id: "0279be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798"
                 .to_string(),

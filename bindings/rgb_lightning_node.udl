@@ -21,6 +21,10 @@ interface SdkNode {
     [Throws=RlnError]
     sequence<Channel> list_channels();
     [Throws=RlnError]
+    sequence<RgbFundingRecovery> list_rgb_funding_recoveries();
+    [Throws=RlnError]
+    RgbFundingRecovery? resolve_rgb_funding_recovery(Txid funding_txid, RgbFundingRecoveryAction action);
+    [Throws=RlnError]
     sequence<Peer> list_peers();
     [Throws=RlnError]
     sequence<Transaction> list_transactions(boolean skip_sync, string? txid);
@@ -267,6 +271,49 @@ enum ChannelStatus {
     "Opening",
     "Opened",
     "Closing",
+};
+
+dictionary RgbFundingRecovery {
+    RgbFundingRecoveryRole role;
+    Txid funding_txid;
+    ChannelId temporary_channel_id;
+    ChannelId? final_channel_id;
+    RgbFundingRecoveryStage stage;
+    boolean channel_is_durable;
+    boolean? transaction_is_known;
+    string? observation_error;
+    RgbFundingRecoveryRequiredAction required_action;
+};
+
+enum RgbFundingRecoveryRole {
+    "Sender",
+    "Receiver",
+};
+
+enum RgbFundingRecoveryStage {
+    "Preparing",
+    "StockPromoted",
+    "HandoffReady",
+    "HandedToLdk",
+    "BroadcastSafeObserved",
+    "Broadcasting",
+    "BroadcastCommitted",
+    "Finalized",
+    "RollingBack",
+    "RetryRequired",
+};
+
+enum RgbFundingRecoveryRequiredAction {
+    "AutomaticReconciliation",
+    "AwaitingLdkEventReplay",
+    "ResumeBroadcast",
+    "RetryChainObservation",
+    "ManualChannelStateRecovery",
+};
+
+enum RgbFundingRecoveryAction {
+    "Recheck",
+    "ResumeBroadcast",
 };
 
 dictionary Peer {

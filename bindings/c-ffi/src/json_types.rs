@@ -22,7 +22,9 @@ use rgb_lightning_node::{
     HtlcStatus, IfaIssuanceType, InflateRequest, InflateResponse, InvoiceStatus,
     ListAssetsResponse, LnInvoiceRequest, LnInvoiceResponse, Media, MediaAttachment, NetworkInfo,
     NodeInfo, Payment, PaymentHash, PaymentType, Peer, ProofOfReserves, PublicKey, RecipientId,
-    RgbAllocation, RgbOutpoint, RgbRecipient, SdkAssetLinkRequest, SdkCloseChannelRequest,
+    RgbAllocation, RgbFundingRecovery, RgbFundingRecoveryAction,
+    RgbFundingRecoveryRequiredAction, RgbFundingRecoveryRole, RgbFundingRecoveryStage,
+    RgbOutpoint, RgbRecipient, SdkAssetLinkRequest, SdkCloseChannelRequest,
     SdkCreateUtxosRequest, SdkDisconnectPeerRequest, SdkExternalSignerBootstrap,
     SdkFailTransfersRequest, SdkFailTransfersResponse, SdkInitRequest, SdkIssueAssetCfaRequest,
     SdkIssueAssetIfaRequest, SdkIssueAssetNiaRequest, SdkIssueAssetUdaRequest, SdkKeysendRequest,
@@ -466,6 +468,196 @@ impl From<Channel> for JsonChannel {
             virtual_open_mode: c.virtual_open_mode,
         }
     }
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum JsonRgbFundingRecoveryRole {
+    Sender,
+    Receiver,
+}
+
+impl From<RgbFundingRecoveryRole> for JsonRgbFundingRecoveryRole {
+    fn from(role: RgbFundingRecoveryRole) -> Self {
+        match role {
+            RgbFundingRecoveryRole::Sender => Self::Sender,
+            RgbFundingRecoveryRole::Receiver => Self::Receiver,
+        }
+    }
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum JsonRgbFundingRecoveryStage {
+    Preparing,
+    StockPromoted,
+    HandoffReady,
+    HandedToLdk,
+    BroadcastSafeObserved,
+    Broadcasting,
+    BroadcastCommitted,
+    Finalized,
+    RollingBack,
+    RetryRequired,
+}
+
+impl From<RgbFundingRecoveryStage> for JsonRgbFundingRecoveryStage {
+    fn from(stage: RgbFundingRecoveryStage) -> Self {
+        match stage {
+            RgbFundingRecoveryStage::Preparing => Self::Preparing,
+            RgbFundingRecoveryStage::StockPromoted => Self::StockPromoted,
+            RgbFundingRecoveryStage::HandoffReady => Self::HandoffReady,
+            RgbFundingRecoveryStage::HandedToLdk => Self::HandedToLdk,
+            RgbFundingRecoveryStage::BroadcastSafeObserved => Self::BroadcastSafeObserved,
+            RgbFundingRecoveryStage::Broadcasting => Self::Broadcasting,
+            RgbFundingRecoveryStage::BroadcastCommitted => Self::BroadcastCommitted,
+            RgbFundingRecoveryStage::Finalized => Self::Finalized,
+            RgbFundingRecoveryStage::RollingBack => Self::RollingBack,
+            RgbFundingRecoveryStage::RetryRequired => Self::RetryRequired,
+        }
+    }
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum JsonRgbFundingRecoveryRequiredAction {
+    AutomaticReconciliation,
+    AwaitingLdkEventReplay,
+    ResumeBroadcast,
+    RetryChainObservation,
+    ManualChannelStateRecovery,
+}
+
+impl From<RgbFundingRecoveryRequiredAction> for JsonRgbFundingRecoveryRequiredAction {
+    fn from(action: RgbFundingRecoveryRequiredAction) -> Self {
+        match action {
+            RgbFundingRecoveryRequiredAction::AutomaticReconciliation => {
+                Self::AutomaticReconciliation
+            }
+            RgbFundingRecoveryRequiredAction::AwaitingLdkEventReplay => {
+                Self::AwaitingLdkEventReplay
+            }
+            RgbFundingRecoveryRequiredAction::ResumeBroadcast => Self::ResumeBroadcast,
+            RgbFundingRecoveryRequiredAction::RetryChainObservation => Self::RetryChainObservation,
+            RgbFundingRecoveryRequiredAction::ManualChannelStateRecovery => {
+                Self::ManualChannelStateRecovery
+            }
+        }
+    }
+}
+
+#[derive(Debug, Serialize)]
+pub(crate) struct JsonRgbFundingRecovery {
+    pub role: JsonRgbFundingRecoveryRole,
+    pub funding_txid: String,
+    pub temporary_channel_id: String,
+    pub final_channel_id: Option<String>,
+    pub stage: JsonRgbFundingRecoveryStage,
+    pub channel_is_durable: bool,
+    pub transaction_is_known: Option<bool>,
+    pub observation_error: Option<String>,
+    pub required_action: JsonRgbFundingRecoveryRequiredAction,
+}
+
+impl From<RgbFundingRecovery> for JsonRgbFundingRecovery {
+    fn from(recovery: RgbFundingRecovery) -> Self {
+        Self {
+            role: recovery.role.into(),
+            funding_txid: fmt_txid(&recovery.funding_txid),
+            temporary_channel_id: fmt_channel_id(&recovery.temporary_channel_id),
+            final_channel_id: recovery.final_channel_id.as_ref().map(fmt_channel_id),
+            stage: recovery.stage.into(),
+            channel_is_durable: recovery.channel_is_durable,
+            transaction_is_known: recovery.transaction_is_known,
+            observation_error: recovery.observation_error,
+            required_action: recovery.required_action.into(),
+        }
+    }
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum JsonRgbFundingRecoveryAction {
+    Recheck,
+    ResumeBroadcast,
+}
+
+impl From<JsonRgbFundingRecoveryAction> for RgbFundingRecoveryAction {
+    fn from(action: JsonRgbFundingRecoveryAction) -> Self {
+        match action {
+            JsonRgbFundingRecoveryAction::Recheck => Self::Recheck,
+            JsonRgbFundingRecoveryAction::ResumeBroadcast => Self::ResumeBroadcast,
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn rgb_funding_recovery_roles_have_stable_json_names() {
+        let sender = JsonRgbFundingRecoveryRole::from(RgbFundingRecoveryRole::Sender);
+        let receiver = JsonRgbFundingRecoveryRole::from(RgbFundingRecoveryRole::Receiver);
+
+        assert_eq!(serde_json::to_string(&sender).unwrap(), "\"sender\"");
+        assert_eq!(serde_json::to_string(&receiver).unwrap(), "\"receiver\"");
+    }
+
+    #[test]
+    fn rgb_funding_recovery_json_is_stable() {
+        let recovery = RgbFundingRecovery {
+            role: RgbFundingRecoveryRole::Sender,
+            funding_txid: Txid::from_str(
+                "0000000000000000000000000000000000000000000000000000000000000000",
+            )
+            .unwrap(),
+            temporary_channel_id: lightning::ln::types::ChannelId([1; 32]),
+            final_channel_id: None,
+            stage: RgbFundingRecoveryStage::Broadcasting,
+            channel_is_durable: true,
+            transaction_is_known: Some(false),
+            observation_error: Some("indexer unavailable".to_string()),
+            required_action: RgbFundingRecoveryRequiredAction::ResumeBroadcast,
+        };
+
+        let value = serde_json::to_value(JsonRgbFundingRecovery::from(recovery)).unwrap();
+        assert_eq!(value["role"], "sender");
+        assert_eq!(value["stage"], "broadcasting");
+        assert_eq!(value["required_action"], "resume_broadcast");
+        assert_eq!(value["temporary_channel_id"], "01".repeat(32));
+        assert_eq!(value["channel_is_durable"], true);
+        assert_eq!(value["transaction_is_known"], false);
+        assert_eq!(value["observation_error"], "indexer unavailable");
+    }
+
+    #[test]
+    fn rgb_funding_recovery_request_accepts_only_supported_actions() {
+        let recheck: JsonResolveRgbFundingRecoveryRequest = serde_json::from_str(
+            r#"{"funding_txid":"00","action":"recheck"}"#,
+        )
+        .unwrap();
+        assert!(matches!(
+            recheck.action,
+            JsonRgbFundingRecoveryAction::Recheck
+        ));
+
+        assert!(serde_json::from_str::<JsonResolveRgbFundingRecoveryRequest>(
+            r#"{"funding_txid":"00","action":"rollback"}"#
+        )
+        .is_err());
+        assert!(serde_json::from_str::<JsonResolveRgbFundingRecoveryRequest>(
+            r#"{"funding_txid":"00","action":"recheck","unexpected":true}"#
+        )
+        .is_err());
+    }
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct JsonResolveRgbFundingRecoveryRequest {
+    pub funding_txid: String,
+    pub action: JsonRgbFundingRecoveryAction,
 }
 
 #[derive(Debug, Serialize)]
