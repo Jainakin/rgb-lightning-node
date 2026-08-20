@@ -285,6 +285,12 @@ pub(crate) struct RgbFundingRecoveryState {
     pub(crate) action: RgbFundingRecoveryAction,
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct RgbFundingRecoveryResolution {
+    pub(crate) recovery: Option<RgbFundingRecoveryState>,
+    pub(crate) recoveries: Vec<RgbFundingRecoveryState>,
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum RgbFundingRecoveryStage {
     Sender(RgbSenderFundingStage),
@@ -292,6 +298,33 @@ pub(crate) enum RgbFundingRecoveryStage {
 }
 
 impl RgbFundingRecoveryStage {
+    pub(crate) const fn as_str(self) -> &'static str {
+        match self {
+            Self::Sender(stage) => match stage {
+                RgbSenderFundingStage::Preparing => "sender_preparing",
+                RgbSenderFundingStage::StockPromoted => "sender_stock_promoted",
+                RgbSenderFundingStage::HandoffReady => "sender_handoff_ready",
+                RgbSenderFundingStage::HandedToLdk => "sender_handed_to_ldk",
+                RgbSenderFundingStage::BroadcastSafeObserved => "sender_broadcast_safe_observed",
+                RgbSenderFundingStage::Broadcasting => "sender_broadcasting",
+                RgbSenderFundingStage::BroadcastCommitted => "sender_broadcast_committed",
+                RgbSenderFundingStage::Finalized => "sender_finalized",
+                RgbSenderFundingStage::DurablyCompleted => "sender_durably_completed",
+                RgbSenderFundingStage::RollingBack => "sender_rolling_back",
+                RgbSenderFundingStage::RetryRequired => "sender_retry_required",
+            },
+            Self::Receiver(stage) => match stage {
+                FundingAcceptanceStage::Validating => "receiver_validating",
+                FundingAcceptanceStage::Prepared => "receiver_prepared",
+                FundingAcceptanceStage::Promoted => "receiver_promoted",
+                FundingAcceptanceStage::Finalizing => "receiver_finalizing",
+                FundingAcceptanceStage::Finalized => "receiver_finalized",
+                FundingAcceptanceStage::RollingBack => "receiver_rolling_back",
+                FundingAcceptanceStage::RetryRequired => "receiver_retry_required",
+            },
+        }
+    }
+
     const fn sort_key(self) -> (u8, u8) {
         match self {
             Self::Sender(stage) => (
@@ -332,6 +365,12 @@ pub(crate) enum RgbFundingRecoveryAction {
     ResumeBroadcast,
     RetryChainObservation,
     ManualChannelStateRecovery,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum RgbFundingRecoveryCommand {
+    Recheck,
+    ResumeBroadcast,
 }
 
 impl RgbFundingRecoveryAction {
@@ -403,6 +442,13 @@ impl RgbFundingRecoveryGuard {
         RgbFundingOperationLease::new(
             Arc::clone(&self.operation_lock).blocking_lock_owned(),
             "startup-reconciliation",
+        )
+    }
+
+    pub(crate) fn blocking_lock_recovery_operation(&self) -> RgbFundingOperationLease {
+        RgbFundingOperationLease::new(
+            Arc::clone(&self.operation_lock).blocking_lock_owned(),
+            "recovery-api",
         )
     }
 
@@ -3540,6 +3586,156 @@ fn should_complete_deferred_rgb_consistency_check(
             ),
         }),
     }
+}
+
+pub(crate) fn list_rgb_funding_recoveries(
+    channel_manager: &ChannelManager,
+    wallet: &RgbLibWalletWrapper,
+    kv_store: &dyn KVStoreSync,
+) -> Result<Vec<RgbFundingRecoveryState>, RgbLibError> {
+    let keys = kv_store
+        .list(RGB_SENDER_FUNDING_NAMESPACE, "")
+        .map_err(|error| rgb_sender_funding_error("cannot list sender funding journals", error))?;
+    let mut recoveries = Vec::new();
+    for key in keys {
+        let record = read_rgb_sender_funding_record(&key, kv_store)?;
+        let channel_is_durable = rgb_sender_channel_is_durable(&record, channel_manager);
+        if !should_report_rgb_sender_recovery(&record, channel_is_durable) {
+            continue;
+        }
+
+        let deterministic_action = rgb_sender_recovery_action(&record, channel_is_durable, false);
+        let transaction_observation = if deterministic_action == RgbSenderRecoveryAction::FailClosed
+            && !matches!(
+                record.stage,
+                RgbSenderFundingStage::Finalized | RgbSenderFundingStage::DurablyCompleted
+            ) {
+            wallet.is_tx_known(record.funding_txid.clone()).map(Some)
+        } else {
+            Ok(None)
+        };
+        recoveries.push(rgb_funding_recovery_view(
+            &record,
+            channel_is_durable,
+            transaction_observation.as_ref().map(|value| *value),
+            None,
+        ));
+    }
+
+    let receiver_keys = kv_store
+        .list(RGB_PRIMARY_NS, RGB_FUNDING_ACCEPTANCE_NS)
+        .map_err(|error| {
+            rgb_sender_funding_error("cannot list receiver funding journals", error)
+        })?;
+    let funded_channel_ids = funded_channel_ids(channel_manager);
+    for key in receiver_keys {
+        let record = read_pending_funding_acceptance(&key, kv_store).map_err(|error| {
+            rgb_sender_funding_error("cannot read receiver funding journal", error)
+        })?;
+        let final_channel_id = receiver_final_channel_id(&record)?;
+        recoveries.push(rgb_receiver_funding_recovery_view(
+            &record,
+            funded_channel_ids.contains(&final_channel_id),
+            None,
+        )?);
+    }
+
+    sort_rgb_funding_recoveries(&mut recoveries);
+    Ok(recoveries)
+}
+
+fn sort_rgb_funding_recoveries(recoveries: &mut [RgbFundingRecoveryState]) {
+    recoveries.sort_by(|a, b| {
+        a.funding_txid
+            .cmp(&b.funding_txid)
+            .then_with(|| a.stage.sort_key().cmp(&b.stage.sort_key()))
+    });
+}
+
+fn should_report_rgb_sender_recovery(
+    record: &RgbSenderFundingRecord,
+    channel_is_durable: bool,
+) -> bool {
+    // Durably-completed journals are retained as harmless replay acknowledgements. Every other
+    // journal must remain visible until it is deleted, including RetryRequired records whose
+    // final deletion failed after rollback.
+    record.stage != RgbSenderFundingStage::DurablyCompleted || !channel_is_durable
+}
+
+pub(crate) fn resolve_rgb_funding_recovery(
+    funding_txid: &str,
+    command: RgbFundingRecoveryCommand,
+    channel_manager: &ChannelManager,
+    wallet: &RgbLibWalletWrapper,
+    kv_store: &SyncedKvStore,
+) -> Result<RgbFundingRecoveryResolution, RgbLibError> {
+    let mut recoveries = match command {
+        RgbFundingRecoveryCommand::Recheck => {
+            let (_, mut receiver_recoveries) =
+                reconcile_rgb_receiver_funding(channel_manager, wallet, kv_store)?;
+            receiver_recoveries.extend(reconcile_rgb_sender_funding(
+                channel_manager,
+                wallet,
+                kv_store,
+            )?);
+            receiver_recoveries
+        }
+        RgbFundingRecoveryCommand::ResumeBroadcast => {
+            let receiver_exists = kv_store
+                .list(RGB_PRIMARY_NS, RGB_FUNDING_ACCEPTANCE_NS)
+                .map_err(|error| {
+                    rgb_sender_funding_error("cannot list receiver funding journals", error)
+                })?
+                .into_iter()
+                .map(|key| read_pending_funding_acceptance(&key, kv_store))
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(|error| {
+                    rgb_sender_funding_error("cannot read receiver funding journal", error)
+                })?
+                .into_iter()
+                .any(|record| record.funding_txid == funding_txid);
+            if receiver_exists {
+                return Err(RgbLibError::Internal {
+                    details: format!(
+                        "receiver funding '{funding_txid}' cannot be broadcast by this node"
+                    ),
+                });
+            }
+
+            let Some(record) = read_rgb_sender_funding_record_optional(funding_txid, kv_store)?
+            else {
+                let recoveries = list_rgb_funding_recoveries(channel_manager, wallet, kv_store)?;
+                return Ok(RgbFundingRecoveryResolution {
+                    recovery: None,
+                    recoveries,
+                });
+            };
+            let channel_is_durable = rgb_sender_channel_is_durable(&record, channel_manager);
+            if rgb_sender_recovery_action(&record, channel_is_durable, false)
+                != RgbSenderRecoveryAction::ResumeBroadcast
+            {
+                return Err(RgbLibError::Internal {
+                    details: format!(
+                        "sender funding '{funding_txid}' is not eligible for broadcast resumption"
+                    ),
+                });
+            }
+            resume_rgb_sender_broadcast(record, channel_manager, wallet, kv_store)?;
+            let finalized = read_rgb_sender_funding_record(funding_txid, kv_store)?;
+            complete_finalized_sender_funding(&finalized, wallet, kv_store)?;
+            list_rgb_funding_recoveries(channel_manager, wallet, kv_store)?
+        }
+    };
+
+    sort_rgb_funding_recoveries(&mut recoveries);
+    let recovery = recoveries
+        .iter()
+        .find(|recovery| recovery.funding_txid == funding_txid)
+        .cloned();
+    Ok(RgbFundingRecoveryResolution {
+        recovery,
+        recoveries,
+    })
 }
 
 // Handle an rgb-lib error that happened while preparing a channel funding transaction in
@@ -10089,6 +10285,125 @@ mod tests {
             RgbFundingRecoveryAction::RetryReconciliation
         );
         assert_eq!(recovery.error, Some(error.to_string()));
+    }
+
+    #[test]
+    fn recovery_listing_hides_only_durable_completion_tombstones() {
+        let record = |stage| RgbSenderFundingRecord {
+            version: RgbSenderFundingRecord::VERSION,
+            manual_broadcast: true,
+            temporary_channel_id: "01".repeat(32),
+            final_channel_id: Some("02".repeat(32)),
+            funding_txid: "03".repeat(32),
+            batch_transfer_idx: 7,
+            rgb_info: Some(RgbInfo {
+                contract_id: test_contract_id(),
+                schema: AssetSchema::Nia,
+                local_rgb_amount: 1,
+                remote_rgb_amount: 2,
+                batch_transfer_idx: Some(7),
+                counterparty_knows_asset: false,
+            }),
+            consignment_delivery: RgbSenderConsignmentDelivery::P2p,
+            stage,
+        };
+
+        assert!(!should_report_rgb_sender_recovery(
+            &record(RgbSenderFundingStage::DurablyCompleted),
+            true,
+        ));
+        assert!(should_report_rgb_sender_recovery(
+            &record(RgbSenderFundingStage::DurablyCompleted),
+            false,
+        ));
+        assert!(should_report_rgb_sender_recovery(
+            &record(RgbSenderFundingStage::RetryRequired),
+            false,
+        ));
+    }
+
+    #[test]
+    fn rgb_funding_recovery_stages_have_stable_opaque_names() {
+        use lightning::rgb_utils::FundingAcceptanceStage;
+
+        let stages = [
+            (
+                RgbFundingRecoveryStage::Sender(RgbSenderFundingStage::Preparing),
+                "sender_preparing",
+            ),
+            (
+                RgbFundingRecoveryStage::Sender(RgbSenderFundingStage::StockPromoted),
+                "sender_stock_promoted",
+            ),
+            (
+                RgbFundingRecoveryStage::Sender(RgbSenderFundingStage::HandoffReady),
+                "sender_handoff_ready",
+            ),
+            (
+                RgbFundingRecoveryStage::Sender(RgbSenderFundingStage::HandedToLdk),
+                "sender_handed_to_ldk",
+            ),
+            (
+                RgbFundingRecoveryStage::Sender(RgbSenderFundingStage::BroadcastSafeObserved),
+                "sender_broadcast_safe_observed",
+            ),
+            (
+                RgbFundingRecoveryStage::Sender(RgbSenderFundingStage::Broadcasting),
+                "sender_broadcasting",
+            ),
+            (
+                RgbFundingRecoveryStage::Sender(RgbSenderFundingStage::BroadcastCommitted),
+                "sender_broadcast_committed",
+            ),
+            (
+                RgbFundingRecoveryStage::Sender(RgbSenderFundingStage::Finalized),
+                "sender_finalized",
+            ),
+            (
+                RgbFundingRecoveryStage::Sender(RgbSenderFundingStage::DurablyCompleted),
+                "sender_durably_completed",
+            ),
+            (
+                RgbFundingRecoveryStage::Sender(RgbSenderFundingStage::RollingBack),
+                "sender_rolling_back",
+            ),
+            (
+                RgbFundingRecoveryStage::Sender(RgbSenderFundingStage::RetryRequired),
+                "sender_retry_required",
+            ),
+            (
+                RgbFundingRecoveryStage::Receiver(FundingAcceptanceStage::Validating),
+                "receiver_validating",
+            ),
+            (
+                RgbFundingRecoveryStage::Receiver(FundingAcceptanceStage::Prepared),
+                "receiver_prepared",
+            ),
+            (
+                RgbFundingRecoveryStage::Receiver(FundingAcceptanceStage::Promoted),
+                "receiver_promoted",
+            ),
+            (
+                RgbFundingRecoveryStage::Receiver(FundingAcceptanceStage::Finalizing),
+                "receiver_finalizing",
+            ),
+            (
+                RgbFundingRecoveryStage::Receiver(FundingAcceptanceStage::Finalized),
+                "receiver_finalized",
+            ),
+            (
+                RgbFundingRecoveryStage::Receiver(FundingAcceptanceStage::RollingBack),
+                "receiver_rolling_back",
+            ),
+            (
+                RgbFundingRecoveryStage::Receiver(FundingAcceptanceStage::RetryRequired),
+                "receiver_retry_required",
+            ),
+        ];
+
+        for (stage, expected) in stages {
+            assert_eq!(stage.as_str(), expected);
+        }
     }
 
     #[test]

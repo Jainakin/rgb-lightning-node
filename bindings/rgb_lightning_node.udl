@@ -278,10 +278,10 @@ dictionary RgbFundingRecovery {
     Txid funding_txid;
     ChannelId temporary_channel_id;
     ChannelId? final_channel_id;
-    RgbFundingRecoveryStage stage;
+    string stage;
     boolean channel_is_durable;
     boolean? transaction_is_known;
-    string? observation_error;
+    string? error;
     RgbFundingRecoveryRequiredAction required_action;
 };
 
@@ -290,22 +290,8 @@ enum RgbFundingRecoveryRole {
     "Receiver",
 };
 
-enum RgbFundingRecoveryStage {
-    "Preparing",
-    "StockPromoted",
-    "HandoffReady",
-    "HandedToLdk",
-    "BroadcastSafeObserved",
-    "Broadcasting",
-    "BroadcastCommitted",
-    "Finalized",
-    "RollingBack",
-    "RetryRequired",
-};
-
 enum RgbFundingRecoveryRequiredAction {
-    "AutomaticReconciliation",
-    "AwaitingLdkEventReplay",
+    "RetryReconciliation",
     "ResumeBroadcast",
     "RetryChainObservation",
     "ManualChannelStateRecovery",

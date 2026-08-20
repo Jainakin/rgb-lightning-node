@@ -1051,6 +1051,29 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/RefreshResponse'
+  /resolvergbfundingrecovery:
+    post:
+      tags:
+        - RGB
+      summary: Resolve an RGB channel-funding recovery
+      description: >-
+        Reconcile or resume one durably recorded RGB channel-funding operation.
+        Unsafe rollback is not exposed.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ResolveRgbFundingRecoveryRequest'
+      responses:
+        '200':
+          description: The remaining recovery state, or null when recovery completed
+          content:
+            application/json:
+              schema:
+                oneOf:
+                  - $ref: '#/components/schemas/RgbFundingRecovery'
+                  - type: 'null'
   /restore:
     post:
       tags:
@@ -1087,6 +1110,23 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/EmptyResponse'
+  /rgbfundingrecoveries:
+    get:
+      tags:
+        - RGB
+      summary: List RGB channel-funding recoveries
+      description: >-
+        List durable RGB channel-funding operations that require reconciliation or
+        operator action.
+      responses:
+        '200':
+          description: Successful operation
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/RgbFundingRecovery'
   /rgbinvoice:
     post:
       tags:
@@ -3771,6 +3811,19 @@ components:
         token:
           type: string
           example: EnYKDBgDIggKBggGEgIYDRIkCAASICqCgqtFMIJ1eLCM3raDzqg9UqV-6nJWzGjjJG0S5IIUGkBpF-itmppHcdcSrSCiKklz9VZT4UmIND_0RFc32Imq3bLR_Y7GYaSpJo5lJfU1cA2BG_hy7P1UN4g5jKTKS88GIiIKIAUKXrrx0Ca-rMZa537VOFw2X8q_KVQ6OC4Z0ztro0sQ
+    ResolveRgbFundingRecoveryRequest:
+      type: object
+      additionalProperties: false
+      required:
+        - funding_txid
+        - action
+      properties:
+        funding_txid:
+          type: string
+          description: Canonical funding transaction ID
+          example: 5a106a814fe28404eece1754dfd45e92ec9bb0044cbfe1d560cfd7b1e1af2981
+        action:
+          $ref: '#/components/schemas/RgbFundingRecoveryAction'
     RgbAllocation:
       type: object
       required:
@@ -3787,6 +3840,68 @@ components:
         settled:
           type: boolean
           example: false
+    RgbFundingRecovery:
+      type: object
+      required:
+        - role
+        - funding_txid
+        - temporary_channel_id
+        - stage
+        - channel_is_durable
+        - required_action
+      properties:
+        role:
+          $ref: '#/components/schemas/RgbFundingRecoveryRole'
+        funding_txid:
+          type: string
+          example: 5a106a814fe28404eece1754dfd45e92ec9bb0044cbfe1d560cfd7b1e1af2981
+        temporary_channel_id:
+          type: string
+          example: 8129afe1b1d7cf60d5e1bf4c04b09bec925ed4df5417ceee0484e24f816a105a
+        final_channel_id:
+          type:
+            - string
+            - 'null'
+          example: null
+        stage:
+          type: string
+          description: >-
+            Opaque diagnostic lifecycle stage. Clients must branch on required_action,
+            not this value.
+          example: sender_broadcasting
+        channel_is_durable:
+          type: boolean
+          example: true
+        transaction_is_known:
+          type:
+            - boolean
+            - 'null'
+          example: null
+        error:
+          type:
+            - string
+            - 'null'
+          example: null
+        required_action:
+          $ref: '#/components/schemas/RgbFundingRecoveryRequiredAction'
+    RgbFundingRecoveryAction:
+      type: string
+      enum:
+        - recheck
+        - resume_broadcast
+    RgbFundingRecoveryRequiredAction:
+      type: string
+      description: The only field clients should use to select an operator action.
+      enum:
+        - retry_reconciliation
+        - resume_broadcast
+        - retry_chain_observation
+        - manual_channel_state_recovery
+    RgbFundingRecoveryRole:
+      type: string
+      enum:
+        - sender
+        - receiver
     RgbInvoiceRequest:
       type: object
       required:

@@ -90,7 +90,9 @@ use crate::error::error_name;
 use crate::ldk::{
     clear_rgb_payment_pending, list_rgb_funding_recoveries as ldk_list_rgb_funding_recoveries,
     peer_has_live_channel, resolve_rgb_funding_recovery as ldk_resolve_rgb_funding_recovery,
-    start_ldk, stop_ldk, LdkBackgroundServices, RgbFundingRecoveryCommand,
+    start_ldk, stop_ldk, LdkBackgroundServices,
+    RgbFundingRecoveryAction as LdkRgbFundingRecoveryAction, RgbFundingRecoveryCommand,
+    RgbFundingRecoveryStage as LdkRgbFundingRecoveryStage, RgbFundingRecoveryState,
     VirtualChannelSessionStatus,
 };
 #[cfg(feature = "vss")]
@@ -144,6 +146,71 @@ pub(crate) enum RgbFundingRecoveryAction {
 pub(crate) struct ResolveRgbFundingRecoveryRequest {
     pub(crate) funding_txid: String,
     pub(crate) action: RgbFundingRecoveryAction,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum RgbFundingRecoveryRole {
+    Sender,
+    Receiver,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum RgbFundingRecoveryRequiredAction {
+    RetryReconciliation,
+    ResumeBroadcast,
+    RetryChainObservation,
+    ManualChannelStateRecovery,
+}
+
+#[derive(Debug, Serialize)]
+pub(crate) struct RgbFundingRecoveryResponse {
+    pub(crate) role: RgbFundingRecoveryRole,
+    pub(crate) funding_txid: String,
+    pub(crate) temporary_channel_id: String,
+    pub(crate) final_channel_id: Option<String>,
+    pub(crate) stage: String,
+    pub(crate) channel_is_durable: bool,
+    pub(crate) transaction_is_known: Option<bool>,
+    pub(crate) error: Option<String>,
+    pub(crate) required_action: RgbFundingRecoveryRequiredAction,
+}
+
+impl From<RgbFundingRecoveryState> for RgbFundingRecoveryResponse {
+    fn from(recovery: RgbFundingRecoveryState) -> Self {
+        let role = match recovery.stage {
+            LdkRgbFundingRecoveryStage::Sender(_) => RgbFundingRecoveryRole::Sender,
+            LdkRgbFundingRecoveryStage::Receiver(_) => RgbFundingRecoveryRole::Receiver,
+        };
+        let stage = recovery.stage.as_str().to_owned();
+        let required_action = match recovery.action {
+            LdkRgbFundingRecoveryAction::RetryReconciliation => {
+                RgbFundingRecoveryRequiredAction::RetryReconciliation
+            }
+            LdkRgbFundingRecoveryAction::ResumeBroadcast => {
+                RgbFundingRecoveryRequiredAction::ResumeBroadcast
+            }
+            LdkRgbFundingRecoveryAction::RetryChainObservation => {
+                RgbFundingRecoveryRequiredAction::RetryChainObservation
+            }
+            LdkRgbFundingRecoveryAction::ManualChannelStateRecovery => {
+                RgbFundingRecoveryRequiredAction::ManualChannelStateRecovery
+            }
+        };
+
+        Self {
+            role,
+            funding_txid: recovery.funding_txid,
+            temporary_channel_id: recovery.temporary_channel_id,
+            final_channel_id: recovery.final_channel_id,
+            stage,
+            channel_is_durable: recovery.channel_is_durable,
+            transaction_is_known: recovery.transaction_is_known,
+            error: recovery.error,
+            required_action,
+        }
+    }
 }
 
 #[derive(Deserialize, Serialize)]
@@ -3483,14 +3550,14 @@ pub(crate) async fn list_channels(
 
 pub(crate) async fn list_rgb_funding_recoveries(
     State(state): State<Arc<AppState>>,
-) -> Result<Json<Vec<crate::ldk::RgbFundingRecovery>>, APIError> {
+) -> Result<Json<Vec<RgbFundingRecoveryResponse>>, APIError> {
     let unlocked_state = {
         let guard = state.check_unlocked().await?;
         Arc::clone(guard.as_ref().unwrap())
     };
     let recovery_guard = Arc::clone(&unlocked_state.rgb_funding_recovery_guard);
     let recoveries = tokio::task::spawn_blocking(move || {
-        let _operation = recovery_guard.blocking_lock_operation();
+        let _operation = recovery_guard.blocking_lock_recovery_operation();
         let recoveries = ldk_list_rgb_funding_recoveries(
             unlocked_state.channel_manager.as_ref(),
             unlocked_state.rgb_wallet_wrapper.as_ref(),
@@ -3503,7 +3570,7 @@ pub(crate) async fn list_rgb_funding_recoveries(
     .map_err(|error| {
         APIError::Unexpected(format!("RGB funding recovery task failed: {error}"))
     })??;
-    Ok(Json(recoveries))
+    Ok(Json(recoveries.into_iter().map(Into::into).collect()))
 }
 
 pub(crate) async fn resolve_rgb_funding_recovery(
@@ -3512,7 +3579,7 @@ pub(crate) async fn resolve_rgb_funding_recovery(
         Json<ResolveRgbFundingRecoveryRequest>,
         APIError,
     >,
-) -> Result<Json<Option<crate::ldk::RgbFundingRecovery>>, APIError> {
+) -> Result<Json<Option<RgbFundingRecoveryResponse>>, APIError> {
     let funding_txid = bitcoin::Txid::from_str(&payload.funding_txid)
         .map_err(|_| APIError::InvalidRequest("invalid RGB funding transaction ID".to_string()))?
         .to_string();
@@ -3526,27 +3593,22 @@ pub(crate) async fn resolve_rgb_funding_recovery(
     };
     let recovery_guard = Arc::clone(&unlocked_state.rgb_funding_recovery_guard);
     let recovery = tokio::task::spawn_blocking(move || {
-        let _operation = recovery_guard.blocking_lock_operation();
-        let recovery = ldk_resolve_rgb_funding_recovery(
+        let _operation = recovery_guard.blocking_lock_recovery_operation();
+        let resolution = ldk_resolve_rgb_funding_recovery(
             &funding_txid,
             action,
             unlocked_state.channel_manager.as_ref(),
             unlocked_state.rgb_wallet_wrapper.as_ref(),
             unlocked_state.kv_store.as_ref(),
         )?;
-        let recoveries = ldk_list_rgb_funding_recoveries(
-            unlocked_state.channel_manager.as_ref(),
-            unlocked_state.rgb_wallet_wrapper.as_ref(),
-            unlocked_state.kv_store.as_ref(),
-        )?;
-        recovery_guard.replace(&recoveries);
-        Ok::<_, rgb_lib::Error>(recovery)
+        recovery_guard.replace(&resolution.recoveries);
+        Ok::<_, rgb_lib::Error>(resolution.recovery)
     })
     .await
     .map_err(|error| {
         APIError::Unexpected(format!("RGB funding recovery task failed: {error}"))
     })??;
-    Ok(Json(recovery))
+    Ok(Json(recovery.map(Into::into)))
 }
 
 pub(crate) async fn list_payments(
@@ -5890,6 +5952,29 @@ mod request_tests {
             r#"{"funding_txid":"00","action":"recheck","unexpected":true}"#
         )
         .is_err());
+    }
+
+    #[test]
+    fn rgb_funding_recovery_response_preserves_receiver_state() {
+        let response = RgbFundingRecoveryResponse::from(RgbFundingRecoveryState {
+            funding_txid: "00".repeat(32),
+            temporary_channel_id: "01".repeat(32),
+            final_channel_id: Some("02".repeat(32)),
+            stage: LdkRgbFundingRecoveryStage::Receiver(
+                lightning::rgb_utils::FundingAcceptanceStage::Promoted,
+            ),
+            channel_is_durable: true,
+            transaction_is_known: None,
+            error: Some("VSS temporarily unavailable".to_owned()),
+            action: LdkRgbFundingRecoveryAction::RetryReconciliation,
+        });
+        let value = serde_json::to_value(response).unwrap();
+
+        assert_eq!(value["role"], "receiver");
+        assert_eq!(value["stage"], "receiver_promoted");
+        assert_eq!(value["required_action"], "retry_reconciliation");
+        assert_eq!(value["transaction_is_known"], serde_json::Value::Null);
+        assert_eq!(value["error"], "VSS temporarily unavailable");
     }
 
     fn sample_node_info(latest_rgs_snapshot_timestamp: Option<u64>) -> NodeInfoResponse {

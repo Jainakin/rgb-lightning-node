@@ -1,51 +1,47 @@
 use super::*;
 
 #[test]
-fn rgb_funding_recovery_mapping_preserves_typed_state() {
-    let mapped = map_rgb_funding_recovery(crate::ldk::RgbFundingRecovery {
-        role: crate::ldk::RgbFundingRecoveryRole::Receiver,
+fn rgb_funding_recovery_mapping_preserves_opaque_stage() {
+    let mapped = map_rgb_funding_recovery(crate::ldk::RgbFundingRecoveryState {
         funding_txid: "0000000000000000000000000000000000000000000000000000000000000000"
             .to_string(),
         temporary_channel_id: "01".repeat(32),
         final_channel_id: Some("02".repeat(32)),
-        stage: crate::ldk::RgbSenderFundingStage::RetryRequired,
+        stage: crate::ldk::RgbFundingRecoveryStage::Receiver(
+            lightning::rgb_utils::FundingAcceptanceStage::RetryRequired,
+        ),
         channel_is_durable: false,
         transaction_is_known: None,
-        observation_error: Some("indexer unavailable".to_string()),
-        required_action: crate::ldk::RgbFundingRecoveryRequiredAction::ManualChannelStateRecovery,
+        error: Some("indexer unavailable".to_string()),
+        action: crate::ldk::RgbFundingRecoveryAction::ManualChannelStateRecovery,
     })
     .unwrap();
 
     assert!(matches!(mapped.role, RgbFundingRecoveryRole::Receiver));
-    assert!(matches!(
-        mapped.stage,
-        RgbFundingRecoveryStage::RetryRequired
-    ));
+    assert_eq!(mapped.stage, "receiver_retry_required");
     assert!(matches!(
         mapped.required_action,
         RgbFundingRecoveryRequiredAction::ManualChannelStateRecovery
     ));
     assert_eq!(mapped.temporary_channel_id.0, [1; 32]);
     assert_eq!(mapped.final_channel_id.unwrap().0, [2; 32]);
-    assert_eq!(
-        mapped.observation_error.as_deref(),
-        Some("indexer unavailable")
-    );
+    assert_eq!(mapped.error.as_deref(), Some("indexer unavailable"));
 }
 
 #[test]
 fn rgb_funding_recovery_mapping_rejects_invalid_channel_ids() {
-    let result = map_rgb_funding_recovery(crate::ldk::RgbFundingRecovery {
-        role: crate::ldk::RgbFundingRecoveryRole::Sender,
+    let result = map_rgb_funding_recovery(crate::ldk::RgbFundingRecoveryState {
         funding_txid: "0000000000000000000000000000000000000000000000000000000000000000"
             .to_string(),
         temporary_channel_id: "01".to_string(),
         final_channel_id: None,
-        stage: crate::ldk::RgbSenderFundingStage::Preparing,
+        stage: crate::ldk::RgbFundingRecoveryStage::Sender(
+            crate::ldk::RgbSenderFundingStage::Preparing,
+        ),
         channel_is_durable: false,
         transaction_is_known: None,
-        observation_error: None,
-        required_action: crate::ldk::RgbFundingRecoveryRequiredAction::AutomaticReconciliation,
+        error: None,
+        action: crate::ldk::RgbFundingRecoveryAction::RetryReconciliation,
     });
 
     assert!(matches!(result, Err(RlnError::Internal(_))));

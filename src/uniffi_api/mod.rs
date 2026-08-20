@@ -255,42 +255,24 @@ fn channel_id_from_hex(value: &str) -> Result<ChannelId, RlnError> {
 }
 
 fn map_rgb_funding_recovery(
-    recovery: crate::ldk::RgbFundingRecovery,
+    recovery: crate::ldk::RgbFundingRecoveryState,
 ) -> Result<RgbFundingRecovery, RlnError> {
-    let role = match recovery.role {
-        crate::ldk::RgbFundingRecoveryRole::Sender => RgbFundingRecoveryRole::Sender,
-        crate::ldk::RgbFundingRecoveryRole::Receiver => RgbFundingRecoveryRole::Receiver,
+    let role = match recovery.stage {
+        crate::ldk::RgbFundingRecoveryStage::Sender(_) => RgbFundingRecoveryRole::Sender,
+        crate::ldk::RgbFundingRecoveryStage::Receiver(_) => RgbFundingRecoveryRole::Receiver,
     };
-    let stage = match recovery.stage {
-        crate::ldk::RgbSenderFundingStage::Preparing => RgbFundingRecoveryStage::Preparing,
-        crate::ldk::RgbSenderFundingStage::StockPromoted => RgbFundingRecoveryStage::StockPromoted,
-        crate::ldk::RgbSenderFundingStage::HandoffReady => RgbFundingRecoveryStage::HandoffReady,
-        crate::ldk::RgbSenderFundingStage::HandedToLdk => RgbFundingRecoveryStage::HandedToLdk,
-        crate::ldk::RgbSenderFundingStage::BroadcastSafeObserved => {
-            RgbFundingRecoveryStage::BroadcastSafeObserved
+    let stage = recovery.stage.as_str().to_owned();
+    let required_action = match recovery.action {
+        crate::ldk::RgbFundingRecoveryAction::RetryReconciliation => {
+            RgbFundingRecoveryRequiredAction::RetryReconciliation
         }
-        crate::ldk::RgbSenderFundingStage::Broadcasting => RgbFundingRecoveryStage::Broadcasting,
-        crate::ldk::RgbSenderFundingStage::BroadcastCommitted => {
-            RgbFundingRecoveryStage::BroadcastCommitted
-        }
-        crate::ldk::RgbSenderFundingStage::Finalized => RgbFundingRecoveryStage::Finalized,
-        crate::ldk::RgbSenderFundingStage::RollingBack => RgbFundingRecoveryStage::RollingBack,
-        crate::ldk::RgbSenderFundingStage::RetryRequired => RgbFundingRecoveryStage::RetryRequired,
-    };
-    let required_action = match recovery.required_action {
-        crate::ldk::RgbFundingRecoveryRequiredAction::AutomaticReconciliation => {
-            RgbFundingRecoveryRequiredAction::AutomaticReconciliation
-        }
-        crate::ldk::RgbFundingRecoveryRequiredAction::AwaitingLdkEventReplay => {
-            RgbFundingRecoveryRequiredAction::AwaitingLdkEventReplay
-        }
-        crate::ldk::RgbFundingRecoveryRequiredAction::ResumeBroadcast => {
+        crate::ldk::RgbFundingRecoveryAction::ResumeBroadcast => {
             RgbFundingRecoveryRequiredAction::ResumeBroadcast
         }
-        crate::ldk::RgbFundingRecoveryRequiredAction::RetryChainObservation => {
+        crate::ldk::RgbFundingRecoveryAction::RetryChainObservation => {
             RgbFundingRecoveryRequiredAction::RetryChainObservation
         }
-        crate::ldk::RgbFundingRecoveryRequiredAction::ManualChannelStateRecovery => {
+        crate::ldk::RgbFundingRecoveryAction::ManualChannelStateRecovery => {
             RgbFundingRecoveryRequiredAction::ManualChannelStateRecovery
         }
     };
@@ -306,7 +288,7 @@ fn map_rgb_funding_recovery(
         stage,
         channel_is_durable: recovery.channel_is_durable,
         transaction_is_known: recovery.transaction_is_known,
-        observation_error: recovery.observation_error,
+        error: recovery.error,
         required_action,
     })
 }

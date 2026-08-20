@@ -212,10 +212,10 @@ pub struct RgbFundingRecovery {
     pub funding_txid: Txid,
     pub temporary_channel_id: ChannelId,
     pub final_channel_id: Option<ChannelId>,
-    pub stage: RgbFundingRecoveryStage,
+    pub stage: String,
     pub channel_is_durable: bool,
     pub transaction_is_known: Option<bool>,
-    pub observation_error: Option<String>,
+    pub error: Option<String>,
     pub required_action: RgbFundingRecoveryRequiredAction,
 }
 
@@ -224,22 +224,8 @@ pub enum RgbFundingRecoveryRole {
     Receiver,
 }
 
-pub enum RgbFundingRecoveryStage {
-    Preparing,
-    StockPromoted,
-    HandoffReady,
-    HandedToLdk,
-    BroadcastSafeObserved,
-    Broadcasting,
-    BroadcastCommitted,
-    Finalized,
-    RollingBack,
-    RetryRequired,
-}
-
 pub enum RgbFundingRecoveryRequiredAction {
-    AutomaticReconciliation,
-    AwaitingLdkEventReplay,
+    RetryReconciliation,
     ResumeBroadcast,
     RetryChainObservation,
     ManualChannelStateRecovery,

@@ -17,8 +17,10 @@ use crate::core_types::async_order::{
 use crate::core_types::PENDING_SWAP_TIMEOUT_SECS;
 use crate::error::APIError;
 use crate::ldk::{
-    clear_rgb_payment_pending, peer_has_live_channel, start_ldk, write_rgb_payment_info_file,
-    InvoiceType, PaymentInfo, VirtualChannelSessionStatus,
+    clear_rgb_payment_pending, list_rgb_funding_recoveries as ldk_list_rgb_funding_recoveries,
+    peer_has_live_channel, resolve_rgb_funding_recovery as ldk_resolve_rgb_funding_recovery,
+    start_ldk, write_rgb_payment_info_file, InvoiceType, PaymentInfo, RgbFundingRecoveryCommand,
+    RgbFundingRecoveryState, VirtualChannelSessionStatus,
 };
 #[cfg(feature = "vss")]
 use crate::ldk::{derive_vss_identity, derive_vss_identity_from_key_source};
@@ -243,6 +245,12 @@ pub(crate) struct AssetMetadataData {
     pub(crate) unspent_link_right_outpoint: Option<RgbLibOutpoint>,
     pub(crate) linked_from_asset_id: Option<String>,
     pub(crate) linked_to_asset_id: Option<String>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum RgbFundingRecoveryActionData {
+    Recheck,
+    ResumeBroadcast,
 }
 
 pub(crate) struct BtcBalance {
@@ -1559,6 +1567,62 @@ pub(crate) async fn list_channels(state: Arc<AppState>) -> Result<Vec<ChannelDat
     }
 
     Ok(channels)
+}
+
+pub(crate) async fn list_rgb_funding_recoveries(
+    state: Arc<AppState>,
+) -> Result<Vec<RgbFundingRecoveryState>, APIError> {
+    let unlocked_state = {
+        let guard = check_unlocked(&state).await?;
+        Arc::clone(guard.as_ref().unwrap())
+    };
+    let recovery_guard = Arc::clone(&unlocked_state.rgb_funding_recovery_guard);
+    tokio::task::spawn_blocking(move || {
+        let _operation = recovery_guard.blocking_lock_recovery_operation();
+        let recoveries = ldk_list_rgb_funding_recoveries(
+            unlocked_state.channel_manager.as_ref(),
+            unlocked_state.rgb_wallet_wrapper.as_ref(),
+            unlocked_state.kv_store.as_ref(),
+        )?;
+        recovery_guard.replace(&recoveries);
+        Ok::<_, rgb_lib::Error>(recoveries)
+    })
+    .await
+    .map_err(|error| APIError::Unexpected(format!("RGB funding recovery task failed: {error}")))?
+    .map_err(APIError::from)
+}
+
+pub(crate) async fn resolve_rgb_funding_recovery(
+    state: Arc<AppState>,
+    funding_txid: String,
+    action: RgbFundingRecoveryActionData,
+) -> Result<Option<RgbFundingRecoveryState>, APIError> {
+    let unlocked_state = {
+        let guard = check_unlocked(&state).await?;
+        Arc::clone(guard.as_ref().unwrap())
+    };
+    let recovery_guard = Arc::clone(&unlocked_state.rgb_funding_recovery_guard);
+    tokio::task::spawn_blocking(move || {
+        let _operation = recovery_guard.blocking_lock_recovery_operation();
+        let command = match action {
+            RgbFundingRecoveryActionData::Recheck => RgbFundingRecoveryCommand::Recheck,
+            RgbFundingRecoveryActionData::ResumeBroadcast => {
+                RgbFundingRecoveryCommand::ResumeBroadcast
+            }
+        };
+        let resolution = ldk_resolve_rgb_funding_recovery(
+            &funding_txid,
+            command,
+            unlocked_state.channel_manager.as_ref(),
+            unlocked_state.rgb_wallet_wrapper.as_ref(),
+            unlocked_state.kv_store.as_ref(),
+        )?;
+        recovery_guard.replace(&resolution.recoveries);
+        Ok::<_, rgb_lib::Error>(resolution.recovery)
+    })
+    .await
+    .map_err(|error| APIError::Unexpected(format!("RGB funding recovery task failed: {error}")))?
+    .map_err(APIError::from)
 }
 
 pub(crate) async fn list_peers(state: Arc<AppState>) -> Result<Vec<PeerData>, APIError> {

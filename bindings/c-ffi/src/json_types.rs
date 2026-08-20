@@ -22,9 +22,8 @@ use rgb_lightning_node::{
     HtlcStatus, IfaIssuanceType, InflateRequest, InflateResponse, InvoiceStatus,
     ListAssetsResponse, LnInvoiceRequest, LnInvoiceResponse, Media, MediaAttachment, NetworkInfo,
     NodeInfo, Payment, PaymentHash, PaymentType, Peer, ProofOfReserves, PublicKey, RecipientId,
-    RgbAllocation, RgbFundingRecovery, RgbFundingRecoveryAction,
-    RgbFundingRecoveryRequiredAction, RgbFundingRecoveryRole, RgbFundingRecoveryStage,
-    RgbOutpoint, RgbRecipient, SdkAssetLinkRequest, SdkCloseChannelRequest,
+    RgbAllocation, RgbFundingRecovery, RgbFundingRecoveryAction, RgbFundingRecoveryRequiredAction,
+    RgbFundingRecoveryRole, RgbOutpoint, RgbRecipient, SdkAssetLinkRequest, SdkCloseChannelRequest,
     SdkCreateUtxosRequest, SdkDisconnectPeerRequest, SdkExternalSignerBootstrap,
     SdkFailTransfersRequest, SdkFailTransfersResponse, SdkInitRequest, SdkIssueAssetCfaRequest,
     SdkIssueAssetIfaRequest, SdkIssueAssetNiaRequest, SdkIssueAssetUdaRequest, SdkKeysendRequest,
@@ -488,41 +487,8 @@ impl From<RgbFundingRecoveryRole> for JsonRgbFundingRecoveryRole {
 
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "snake_case")]
-pub(crate) enum JsonRgbFundingRecoveryStage {
-    Preparing,
-    StockPromoted,
-    HandoffReady,
-    HandedToLdk,
-    BroadcastSafeObserved,
-    Broadcasting,
-    BroadcastCommitted,
-    Finalized,
-    RollingBack,
-    RetryRequired,
-}
-
-impl From<RgbFundingRecoveryStage> for JsonRgbFundingRecoveryStage {
-    fn from(stage: RgbFundingRecoveryStage) -> Self {
-        match stage {
-            RgbFundingRecoveryStage::Preparing => Self::Preparing,
-            RgbFundingRecoveryStage::StockPromoted => Self::StockPromoted,
-            RgbFundingRecoveryStage::HandoffReady => Self::HandoffReady,
-            RgbFundingRecoveryStage::HandedToLdk => Self::HandedToLdk,
-            RgbFundingRecoveryStage::BroadcastSafeObserved => Self::BroadcastSafeObserved,
-            RgbFundingRecoveryStage::Broadcasting => Self::Broadcasting,
-            RgbFundingRecoveryStage::BroadcastCommitted => Self::BroadcastCommitted,
-            RgbFundingRecoveryStage::Finalized => Self::Finalized,
-            RgbFundingRecoveryStage::RollingBack => Self::RollingBack,
-            RgbFundingRecoveryStage::RetryRequired => Self::RetryRequired,
-        }
-    }
-}
-
-#[derive(Debug, Serialize)]
-#[serde(rename_all = "snake_case")]
 pub(crate) enum JsonRgbFundingRecoveryRequiredAction {
-    AutomaticReconciliation,
-    AwaitingLdkEventReplay,
+    RetryReconciliation,
     ResumeBroadcast,
     RetryChainObservation,
     ManualChannelStateRecovery,
@@ -531,12 +497,7 @@ pub(crate) enum JsonRgbFundingRecoveryRequiredAction {
 impl From<RgbFundingRecoveryRequiredAction> for JsonRgbFundingRecoveryRequiredAction {
     fn from(action: RgbFundingRecoveryRequiredAction) -> Self {
         match action {
-            RgbFundingRecoveryRequiredAction::AutomaticReconciliation => {
-                Self::AutomaticReconciliation
-            }
-            RgbFundingRecoveryRequiredAction::AwaitingLdkEventReplay => {
-                Self::AwaitingLdkEventReplay
-            }
+            RgbFundingRecoveryRequiredAction::RetryReconciliation => Self::RetryReconciliation,
             RgbFundingRecoveryRequiredAction::ResumeBroadcast => Self::ResumeBroadcast,
             RgbFundingRecoveryRequiredAction::RetryChainObservation => Self::RetryChainObservation,
             RgbFundingRecoveryRequiredAction::ManualChannelStateRecovery => {
@@ -552,10 +513,10 @@ pub(crate) struct JsonRgbFundingRecovery {
     pub funding_txid: String,
     pub temporary_channel_id: String,
     pub final_channel_id: Option<String>,
-    pub stage: JsonRgbFundingRecoveryStage,
+    pub stage: String,
     pub channel_is_durable: bool,
     pub transaction_is_known: Option<bool>,
-    pub observation_error: Option<String>,
+    pub error: Option<String>,
     pub required_action: JsonRgbFundingRecoveryRequiredAction,
 }
 
@@ -566,10 +527,10 @@ impl From<RgbFundingRecovery> for JsonRgbFundingRecovery {
             funding_txid: fmt_txid(&recovery.funding_txid),
             temporary_channel_id: fmt_channel_id(&recovery.temporary_channel_id),
             final_channel_id: recovery.final_channel_id.as_ref().map(fmt_channel_id),
-            stage: recovery.stage.into(),
+            stage: recovery.stage,
             channel_is_durable: recovery.channel_is_durable,
             transaction_is_known: recovery.transaction_is_known,
-            observation_error: recovery.observation_error,
+            error: recovery.error,
             required_action: recovery.required_action.into(),
         }
     }
@@ -614,42 +575,44 @@ mod tests {
             .unwrap(),
             temporary_channel_id: lightning::ln::types::ChannelId([1; 32]),
             final_channel_id: None,
-            stage: RgbFundingRecoveryStage::Broadcasting,
+            stage: "sender_broadcasting".to_owned(),
             channel_is_durable: true,
             transaction_is_known: Some(false),
-            observation_error: Some("indexer unavailable".to_string()),
+            error: Some("indexer unavailable".to_string()),
             required_action: RgbFundingRecoveryRequiredAction::ResumeBroadcast,
         };
 
         let value = serde_json::to_value(JsonRgbFundingRecovery::from(recovery)).unwrap();
         assert_eq!(value["role"], "sender");
-        assert_eq!(value["stage"], "broadcasting");
+        assert_eq!(value["stage"], "sender_broadcasting");
         assert_eq!(value["required_action"], "resume_broadcast");
         assert_eq!(value["temporary_channel_id"], "01".repeat(32));
         assert_eq!(value["channel_is_durable"], true);
         assert_eq!(value["transaction_is_known"], false);
-        assert_eq!(value["observation_error"], "indexer unavailable");
+        assert_eq!(value["error"], "indexer unavailable");
     }
 
     #[test]
     fn rgb_funding_recovery_request_accepts_only_supported_actions() {
-        let recheck: JsonResolveRgbFundingRecoveryRequest = serde_json::from_str(
-            r#"{"funding_txid":"00","action":"recheck"}"#,
-        )
-        .unwrap();
+        let recheck: JsonResolveRgbFundingRecoveryRequest =
+            serde_json::from_str(r#"{"funding_txid":"00","action":"recheck"}"#).unwrap();
         assert!(matches!(
             recheck.action,
             JsonRgbFundingRecoveryAction::Recheck
         ));
 
-        assert!(serde_json::from_str::<JsonResolveRgbFundingRecoveryRequest>(
-            r#"{"funding_txid":"00","action":"rollback"}"#
-        )
-        .is_err());
-        assert!(serde_json::from_str::<JsonResolveRgbFundingRecoveryRequest>(
-            r#"{"funding_txid":"00","action":"recheck","unexpected":true}"#
-        )
-        .is_err());
+        assert!(
+            serde_json::from_str::<JsonResolveRgbFundingRecoveryRequest>(
+                r#"{"funding_txid":"00","action":"rollback"}"#
+            )
+            .is_err()
+        );
+        assert!(
+            serde_json::from_str::<JsonResolveRgbFundingRecoveryRequest>(
+                r#"{"funding_txid":"00","action":"recheck","unexpected":true}"#
+            )
+            .is_err()
+        );
     }
 }
 

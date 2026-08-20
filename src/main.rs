@@ -86,12 +86,12 @@ use crate::routes::{
     create_utxos, decode_ln_invoice, decode_rgb_invoice, decode_swapstring, disconnect_peer,
     estimate_fee, fail_transfers, get_asset_media, get_channel_id, get_consignment, get_payment,
     get_swap, inflate, init, invoice_status, issue_asset_cfa, issue_asset_ifa, issue_asset_nia,
-    keysend, list_assets, list_channels, list_payments, list_peers, list_rgb_funding_recoveries,
-    list_swaps, list_transactions, list_transfers, list_unspents, ln_invoice, lock, maker_execute,
-    maker_init, network_info, node_info, open_channel, post_asset_media, provide_out_of_band_ack,
-    provide_out_of_band_consignment, refresh_transfers, resolve_rgb_funding_recovery, restore,
-    revoke_token, rgb_invoice, rotate_address, send_btc, send_onion_message, send_payment, send_rgb,
-    shutdown, sign_message, sync, taker, unlock,
+    issue_asset_uda, keysend, list_assets, list_channels, list_payments, list_peers,
+    list_rgb_funding_recoveries, list_swaps, list_transactions, list_transfers, list_unspents,
+    ln_invoice, lock, maker_execute, maker_init, network_info, node_info, open_channel,
+    post_asset_media, provide_out_of_band_ack, provide_out_of_band_consignment, refresh_transfers,
+    resolve_rgb_funding_recovery, restore, revoke_token, rgb_invoice, rotate_address, send_btc,
+    send_onion_message, send_payment, send_rgb, shutdown, sign_message, sync, taker, unlock,
 };
 #[cfg(feature = "vss")]
 use crate::routes::{vss_backup, vss_backup_info, vss_clear_fence};
