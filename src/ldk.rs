@@ -1061,6 +1061,25 @@ fn persist_staged_inbound_payment(
     Ok(())
 }
 
+fn effective_inbound_payment_status(
+    status: HTLCStatus,
+    expires_at: Option<u64>,
+    claim_deadline_height: Option<u32>,
+    now: u64,
+    height: u32,
+) -> HTLCStatus {
+    match status {
+        HTLCStatus::Pending if expires_at.is_some_and(|expiry| now > expiry) => HTLCStatus::Failed,
+        HTLCStatus::Claimable
+            if claim_deadline_height.is_some_and(|deadline| height >= deadline)
+                || expires_at.is_some_and(|expiry| now >= expiry) =>
+        {
+            HTLCStatus::Failed
+        }
+        _ => status,
+    }
+}
+
 impl UnlockedAppState {
     pub(crate) fn add_maker_swap(&self, payment_hash: PaymentHash, swap: SwapData) {
         let mut maker_swaps = self.get_maker_swaps();
@@ -1227,39 +1246,59 @@ impl UnlockedAppState {
     pub(crate) fn list_updated_inbound_payments(&self) -> LdkHashMap<PaymentHash, PaymentInfo> {
         let now = get_current_timestamp();
         let height = self.channel_manager.current_best_block().height;
+
+        let _rgb_wallet_operation = match self.lock_rgb_wallet_mutation() {
+            Ok(operation) => operation,
+            Err(error) => {
+                let mut payments = self.inbound_payments();
+                for payment_info in payments.values_mut() {
+                    let effective_status = effective_inbound_payment_status(
+                        payment_info.status,
+                        payment_info.expires_at,
+                        payment_info.claim_deadline_height,
+                        now,
+                        height,
+                    );
+                    if effective_status != payment_info.status {
+                        payment_info.status = effective_status;
+                        payment_info.updated_at = now;
+                    }
+                }
+                tracing::debug!(
+                    %error,
+                    "returning effective inbound payment statuses without persisting them"
+                );
+                return payments;
+            }
+        };
+
         let mut inbound = self.get_inbound_payments();
         let mut failed = false;
         let mut claimables_to_fail = vec![];
         for (payment_hash, payment_info) in inbound.payments.iter_mut() {
+            let effective_status = effective_inbound_payment_status(
+                payment_info.status,
+                payment_info.expires_at,
+                payment_info.claim_deadline_height,
+                now,
+                height,
+            );
+            if effective_status == payment_info.status {
+                continue;
+            }
+
             match payment_info.status {
                 HTLCStatus::Pending => {
-                    if let Some(expires_at) = payment_info.expires_at {
-                        if now > expires_at {
-                            payment_info.status = HTLCStatus::Failed;
-                            payment_info.updated_at = now;
-                            failed = true;
-                        }
-                    }
+                    payment_info.status = effective_status;
+                    payment_info.updated_at = now;
+                    failed = true;
                 }
-                HTLCStatus::Claimable => {
-                    let deadline_passed = payment_info
-                        .claim_deadline_height
-                        .map(|h| height >= h)
-                        .unwrap_or(false);
-                    let invoice_expired = payment_info
-                        .expires_at
-                        .map(|expires_at| now >= expires_at)
-                        .unwrap_or(false);
-
-                    if deadline_passed || invoice_expired {
-                        claimables_to_fail.push((
-                            *payment_hash,
-                            payment_info.claim_deadline_height,
-                            payment_info.expires_at,
-                        ));
-                    }
-                }
-                _ => {}
+                HTLCStatus::Claimable => claimables_to_fail.push((
+                    *payment_hash,
+                    payment_info.claim_deadline_height,
+                    payment_info.expires_at,
+                )),
+                _ => unreachable!("only pending and claimable payments can expire"),
             }
         }
 
@@ -9835,6 +9874,30 @@ mod tests {
                 reuse
             ));
         }
+    }
+
+    #[test]
+    fn inbound_payment_expiry_projection_preserves_boundary_semantics() {
+        assert_eq!(
+            effective_inbound_payment_status(HTLCStatus::Pending, Some(100), None, 100, 10),
+            HTLCStatus::Pending
+        );
+        assert_eq!(
+            effective_inbound_payment_status(HTLCStatus::Pending, Some(100), None, 101, 10),
+            HTLCStatus::Failed
+        );
+        assert_eq!(
+            effective_inbound_payment_status(HTLCStatus::Claimable, Some(100), None, 100, 10),
+            HTLCStatus::Failed
+        );
+        assert_eq!(
+            effective_inbound_payment_status(HTLCStatus::Claimable, None, Some(10), 99, 10),
+            HTLCStatus::Failed
+        );
+        assert_eq!(
+            effective_inbound_payment_status(HTLCStatus::Succeeded, Some(1), Some(1), 100, 100),
+            HTLCStatus::Succeeded
+        );
     }
 
     #[test]
