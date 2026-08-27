@@ -15,7 +15,7 @@ use lightning::chain::channelmonitor::Balance;
 use lightning::ln::{channelmanager::OptionalOfferPaymentParams, types::ChannelId};
 use lightning::offers::offer::{self, Offer};
 use lightning::onion_message::messenger::Destination;
-use lightning::rgb_utils::{RgbInfo, RgbKvStoreExt, STATIC_BLINDING};
+use lightning::rgb_utils::{is_channel_rgb, RgbInfo, RgbKvStoreExt, STATIC_BLINDING};
 use lightning::routing::gossip::RoutingFees;
 use lightning::routing::router::{Path as LnPath, Route, RouteHint, RouteHintHop};
 use lightning::{
@@ -1738,6 +1738,7 @@ pub(crate) async fn address(
 ) -> Result<Json<AddressResponse>, APIError> {
     let guard = state.check_unlocked().await?;
     let unlocked_state = guard.as_ref().unwrap();
+    let _rgb_wallet_operation = unlocked_state.lock_rgb_wallet_mutation()?;
 
     let address = unlocked_state.rgb_get_address()?;
 
@@ -1749,6 +1750,7 @@ pub(crate) async fn rotate_address(
 ) -> Result<Json<AddressResponse>, APIError> {
     let guard = state.check_unlocked().await?;
     let unlocked_state = guard.as_ref().unwrap();
+    let _rgb_wallet_operation = unlocked_state.lock_rgb_wallet_mutation()?;
 
     let address = unlocked_state.rgb_rotate_address()?;
 
@@ -1762,6 +1764,7 @@ pub(crate) async fn async_order_new(
     let guard = state.check_unlocked().await?;
     let unlocked_state = Arc::clone(guard.as_ref().unwrap());
     drop(guard);
+    let _rgb_wallet_operation = unlocked_state.lock_rgb_wallet_mutation()?;
 
     let host_node_id =
         hex_str_to_compressed_pubkey(&payload.host_node_id).ok_or(APIError::InvalidPubkey)?;
@@ -1871,6 +1874,7 @@ pub(crate) async fn async_order_outbound_invoice(
     let guard = state.check_unlocked().await?;
     let unlocked_state = Arc::clone(guard.as_ref().unwrap());
     drop(guard);
+    let _rgb_wallet_operation = unlocked_state.lock_rgb_wallet_mutation()?;
 
     let peer_node_id =
         hex_str_to_compressed_pubkey(&payload.client_node_id).ok_or(APIError::InvalidPubkey)?;
@@ -1986,6 +1990,7 @@ pub(crate) async fn asset_link(
     no_cancel(async move {
         let guard = state.check_unlocked().await?;
         let unlocked_state = guard.as_ref().unwrap();
+        let _rgb_wallet_operation = unlocked_state.lock_rgb_wallet_mutation()?;
         let asset_link = create_asset_link(unlocked_state, payload)?;
 
         Ok(Json(asset_link))
@@ -2050,6 +2055,11 @@ pub(crate) async fn btc_balance(
 ) -> Result<Json<BtcBalanceResponse>, APIError> {
     let guard = state.check_unlocked().await?;
     let unlocked_state = guard.as_ref().unwrap();
+    let _rgb_wallet_operation = if payload.skip_sync {
+        None
+    } else {
+        Some(unlocked_state.lock_rgb_wallet_mutation()?)
+    };
 
     let btc_balance = unlocked_state.rgb_get_btc_balance(payload.skip_sync)?;
 
@@ -2077,6 +2087,8 @@ pub(crate) async fn cancel_hodl_invoice(
         let unlocked_state = guard.as_ref().unwrap();
 
         let payment_hash = validate_and_parse_payment_hash(&payload.payment_hash)?;
+        let _rgb_payment_operation = unlocked_state
+            .lock_channel_payment(unlocked_state.kv_store.is_payment_rgb(&payment_hash))?;
         let payment_info = unlocked_state
             .get_inbound_payments()
             .payments
@@ -2154,6 +2166,8 @@ pub(crate) async fn claim_hodl_invoice(
         let unlocked_state = guard.as_ref().unwrap();
 
         let payment_hash = validate_and_parse_payment_hash(&payload.payment_hash)?;
+        let _rgb_payment_operation = unlocked_state
+            .lock_channel_payment(unlocked_state.kv_store.is_payment_rgb(&payment_hash))?;
         let preimage =
             validate_and_parse_payment_preimage(&payload.payment_preimage, &payment_hash)?;
 
@@ -2242,6 +2256,10 @@ pub(crate) async fn close_channel(
             return Err(APIError::InvalidChannelID);
         }
         let requested_cid = ChannelId(channel_id_vec.unwrap().try_into().unwrap());
+        let _rgb_payment_operation = unlocked_state.lock_channel_payment(is_channel_rgb(
+            &requested_cid,
+            unlocked_state.kv_store.as_ref(),
+        ))?;
 
         let peer_pubkey_vec = match hex_str_to_vec(&payload.peer_pubkey) {
             Some(peer_pubkey_vec) => peer_pubkey_vec,
@@ -2448,6 +2466,7 @@ pub(crate) async fn create_utxos(
     no_cancel(async move {
         let guard = state.check_unlocked().await?;
         let unlocked_state = guard.as_ref().unwrap();
+        let _rgb_wallet_operation = unlocked_state.lock_rgb_wallet_mutation()?;
 
         let num = payload.num.unwrap_or(unlocked_state.config.rgb.utxo_num);
         let size = payload
@@ -2621,6 +2640,7 @@ pub(crate) async fn fail_transfers(
     no_cancel(async move {
         let guard = state.check_unlocked().await?;
         let unlocked_state = guard.as_ref().unwrap();
+        let _rgb_wallet_operation = unlocked_state.lock_rgb_wallet_mutation()?;
 
         let unlocked_state_copy = unlocked_state.clone();
         let transfers_changed = tokio::task::spawn_blocking(move || {
@@ -2786,6 +2806,54 @@ pub(crate) async fn get_payment(
     Err(APIError::PaymentNotFound(payload.payment_hash))
 }
 
+fn map_swap(
+    payment_hash: &PaymentHash,
+    swap_data: &SwapData,
+    taker: bool,
+    unlocked_state: &UnlockedAppState,
+) -> Swap {
+    let mut status = swap_data.status;
+    if status == SwapStatus::Waiting && get_current_timestamp() > swap_data.swap_info.expiry {
+        status = SwapStatus::Expired;
+    } else if status == SwapStatus::Pending
+        && get_current_timestamp() > swap_data.initiated_at.unwrap() + PENDING_SWAP_TIMEOUT_SECS
+    {
+        status = SwapStatus::Failed;
+    }
+
+    if status != swap_data.status {
+        match unlocked_state.lock_rgb_wallet_mutation() {
+            Ok(_rgb_wallet_operation) => {
+                if taker {
+                    unlocked_state.update_taker_swap_status(payment_hash, status);
+                } else {
+                    unlocked_state.update_maker_swap_status(payment_hash, status);
+                }
+            }
+            Err(error) => {
+                tracing::debug!(
+                    %error,
+                    %payment_hash,
+                    "returning derived swap status without persisting it"
+                );
+            }
+        }
+    }
+
+    Swap {
+        payment_hash: payment_hash.to_string(),
+        qty_from: swap_data.swap_info.qty_from,
+        qty_to: swap_data.swap_info.qty_to,
+        from_asset: swap_data.swap_info.from_asset.map(|c| c.to_string()),
+        to_asset: swap_data.swap_info.to_asset.map(|c| c.to_string()),
+        status,
+        requested_at: swap_data.requested_at,
+        initiated_at: swap_data.initiated_at,
+        expires_at: swap_data.swap_info.expiry,
+        completed_at: swap_data.completed_at,
+    }
+}
+
 pub(crate) async fn get_swap(
     State(state): State<Arc<AppState>>,
     WithRejection(Json(payload), _): WithRejection<Json<GetSwapRequest>, APIError>,
@@ -2795,48 +2863,18 @@ pub(crate) async fn get_swap(
 
     let requested_ph = validate_and_parse_payment_hash(&payload.payment_hash)?;
 
-    let map_swap = |payment_hash: &PaymentHash, swap_data: &SwapData, taker: bool| {
-        let mut status = swap_data.status;
-        if status == SwapStatus::Waiting && get_current_timestamp() > swap_data.swap_info.expiry {
-            status = SwapStatus::Expired;
-        } else if status == SwapStatus::Pending
-            && get_current_timestamp() > swap_data.initiated_at.unwrap() + PENDING_SWAP_TIMEOUT_SECS
-        {
-            status = SwapStatus::Failed;
-        }
-        if status != swap_data.status {
-            if taker {
-                unlocked_state.update_taker_swap_status(payment_hash, status);
-            } else {
-                unlocked_state.update_maker_swap_status(payment_hash, status);
-            }
-        }
-        Swap {
-            payment_hash: payment_hash.to_string(),
-            qty_from: swap_data.swap_info.qty_from,
-            qty_to: swap_data.swap_info.qty_to,
-            from_asset: swap_data.swap_info.from_asset.map(|c| c.to_string()),
-            to_asset: swap_data.swap_info.to_asset.map(|c| c.to_string()),
-            status,
-            requested_at: swap_data.requested_at,
-            initiated_at: swap_data.initiated_at,
-            expires_at: swap_data.swap_info.expiry,
-            completed_at: swap_data.completed_at,
-        }
-    };
-
     if payload.taker {
         let taker_swaps = unlocked_state.taker_swaps();
         if let Some(sd) = taker_swaps.get(&requested_ph) {
             return Ok(Json(GetSwapResponse {
-                swap: map_swap(&requested_ph, sd, true),
+                swap: map_swap(&requested_ph, sd, true, unlocked_state),
             }));
         }
     } else {
         let maker_swaps = unlocked_state.maker_swaps();
         if let Some(sd) = maker_swaps.get(&requested_ph) {
             return Ok(Json(GetSwapResponse {
-                swap: map_swap(&requested_ph, sd, false),
+                swap: map_swap(&requested_ph, sd, false, unlocked_state),
             }));
         }
     }
@@ -2851,6 +2889,7 @@ pub(crate) async fn inflate(
     no_cancel(async move {
         let guard = state.check_unlocked().await?;
         let unlocked_state = guard.as_ref().unwrap();
+        let _rgb_wallet_operation = unlocked_state.lock_rgb_wallet_mutation()?;
         if unlocked_state.external_signer_mode {
             return Err(APIError::UnsupportedInExternalSignerMode(
                 "inflate is not supported in external signer mode".to_string(),
@@ -3005,6 +3044,7 @@ pub(crate) async fn issue_asset_cfa(
     no_cancel(async move {
         let guard = state.check_unlocked().await?;
         let unlocked_state = guard.as_ref().unwrap();
+        let _rgb_wallet_operation = unlocked_state.lock_rgb_wallet_mutation()?;
         if unlocked_state.external_signer_mode {
             return Err(APIError::UnsupportedInExternalSignerMode(
                 "asset issuance is not supported in external signer mode".to_string(),
@@ -3041,6 +3081,7 @@ pub(crate) async fn issue_asset_ifa(
     no_cancel(async move {
         let guard = state.check_unlocked().await?;
         let unlocked_state = guard.as_ref().unwrap();
+        let _rgb_wallet_operation = unlocked_state.lock_rgb_wallet_mutation()?;
         if unlocked_state.external_signer_mode {
             return Err(APIError::UnsupportedInExternalSignerMode(
                 "asset issuance is not supported in external signer mode".to_string(),
@@ -3071,6 +3112,7 @@ pub(crate) async fn issue_asset_nia(
     no_cancel(async move {
         let guard = state.check_unlocked().await?;
         let unlocked_state = guard.as_ref().unwrap();
+        let _rgb_wallet_operation = unlocked_state.lock_rgb_wallet_mutation()?;
         if unlocked_state.external_signer_mode {
             return Err(APIError::UnsupportedInExternalSignerMode(
                 "asset issuance is not supported in external signer mode".to_string(),
@@ -3098,6 +3140,7 @@ pub(crate) async fn issue_asset_uda(
     no_cancel(async move {
         let guard = state.check_unlocked().await?;
         let unlocked_state = guard.as_ref().unwrap();
+        let _rgb_wallet_operation = unlocked_state.lock_rgb_wallet_mutation()?;
         if unlocked_state.external_signer_mode {
             return Err(APIError::UnsupportedInExternalSignerMode(
                 "asset issuance is not supported in external signer mode".to_string(),
@@ -3172,6 +3215,7 @@ pub(crate) async fn keysend(
                 return Err(APIError::IncompleteRGBInfo);
             }
         };
+        let _rgb_payment_operation = unlocked_state.lock_channel_payment(rgb_payment.is_some())?;
 
         let route_params = RouteParameters::from_payment_params_and_value(
             PaymentParameters::for_keysend(dest_pubkey, 40, false),
@@ -3536,47 +3580,17 @@ pub(crate) async fn list_swaps(
     let guard = state.check_unlocked().await?;
     let unlocked_state = guard.as_ref().unwrap();
 
-    let map_swap = |payment_hash: &PaymentHash, swap_data: &SwapData, taker: bool| {
-        let mut status = swap_data.status;
-        if status == SwapStatus::Waiting && get_current_timestamp() > swap_data.swap_info.expiry {
-            status = SwapStatus::Expired;
-        } else if status == SwapStatus::Pending
-            && get_current_timestamp() > swap_data.initiated_at.unwrap() + PENDING_SWAP_TIMEOUT_SECS
-        {
-            status = SwapStatus::Failed;
-        }
-        if status != swap_data.status {
-            if taker {
-                unlocked_state.update_taker_swap_status(payment_hash, status);
-            } else {
-                unlocked_state.update_maker_swap_status(payment_hash, status);
-            }
-        }
-        Swap {
-            payment_hash: payment_hash.to_string(),
-            qty_from: swap_data.swap_info.qty_from,
-            qty_to: swap_data.swap_info.qty_to,
-            from_asset: swap_data.swap_info.from_asset.map(|c| c.to_string()),
-            to_asset: swap_data.swap_info.to_asset.map(|c| c.to_string()),
-            status,
-            requested_at: swap_data.requested_at,
-            initiated_at: swap_data.initiated_at,
-            expires_at: swap_data.swap_info.expiry,
-            completed_at: swap_data.completed_at,
-        }
-    };
-
     let taker_swaps = unlocked_state.taker_swaps();
     let maker_swaps = unlocked_state.maker_swaps();
 
     Ok(Json(ListSwapsResponse {
         taker: taker_swaps
             .iter()
-            .map(|(ph, sd)| map_swap(ph, sd, true))
+            .map(|(ph, sd)| map_swap(ph, sd, true, unlocked_state))
             .collect(),
         maker: maker_swaps
             .iter()
-            .map(|(ph, sd)| map_swap(ph, sd, false))
+            .map(|(ph, sd)| map_swap(ph, sd, false, unlocked_state))
             .collect(),
     }))
 }
@@ -3587,6 +3601,11 @@ pub(crate) async fn list_transactions(
 ) -> Result<Json<ListTransactionsResponse>, APIError> {
     let guard = state.check_unlocked().await?;
     let unlocked_state = guard.as_ref().unwrap();
+    let _rgb_wallet_operation = if payload.skip_sync {
+        None
+    } else {
+        Some(unlocked_state.lock_rgb_wallet_mutation()?)
+    };
 
     let mut transactions = vec![];
     for tx in unlocked_state.rgb_list_transactions(payload.skip_sync)? {
@@ -3727,6 +3746,11 @@ pub(crate) async fn list_unspents(
 ) -> Result<Json<ListUnspentsResponse>, APIError> {
     let guard = state.check_unlocked().await?;
     let unlocked_state = guard.as_ref().unwrap();
+    let _rgb_wallet_operation = if payload.skip_sync {
+        None
+    } else {
+        Some(unlocked_state.lock_rgb_wallet_mutation()?)
+    };
 
     let mut unspents = vec![];
     for unspent in unlocked_state.rgb_list_unspents(payload.settled_only, payload.skip_sync)? {
@@ -3792,6 +3816,7 @@ pub(crate) async fn ln_invoice(
         } else {
             None
         };
+        let _rgb_payment_operation = unlocked_state.lock_channel_payment(contract_id.is_some())?;
 
         if let Some(contract_id) = &contract_id {
             // Only lower the floor when the asset is held in a virtual channel; a regular channel
@@ -3916,6 +3941,7 @@ pub(crate) async fn maker_execute(
     no_cancel(async move {
         let guard = state.check_unlocked().await?;
         let unlocked_state = guard.as_ref().unwrap();
+        let _rgb_wallet_operation = unlocked_state.lock_rgb_wallet_mutation()?;
 
         let swapstring = SwapString::from_str(&payload.swapstring)
             .map_err(|e| APIError::InvalidSwapString(payload.swapstring.clone(), e.to_string()))?;
@@ -4137,6 +4163,7 @@ pub(crate) async fn maker_init(
     no_cancel(async move {
         let guard = state.check_unlocked().await?;
         let unlocked_state = guard.as_ref().unwrap();
+        let _rgb_wallet_operation = unlocked_state.lock_rgb_wallet_mutation()?;
 
         let from_asset = match &payload.from_asset {
             None => None,
@@ -4324,6 +4351,7 @@ pub(crate) async fn open_channel(
     no_cancel(async move {
         let guard = state.check_unlocked().await?;
         let unlocked_state = guard.as_ref().unwrap();
+        let _rgb_wallet_operation = unlocked_state.lock_rgb_wallet_mutation()?;
 
         // Channel persistence is remote-first: without VSS the open would
         // accept and then stall silently, so refuse it up front.
@@ -4862,6 +4890,7 @@ pub(crate) async fn refresh_transfers(
     no_cancel(async move {
         let guard = state.check_unlocked().await?;
         let unlocked_state = guard.as_ref().unwrap();
+        let _rgb_wallet_operation = unlocked_state.lock_rgb_wallet_mutation()?;
         let unlocked_state_copy = unlocked_state.clone();
 
         let filter = payload.filter.into_iter().map(|f| f.into()).collect();
@@ -4950,6 +4979,7 @@ pub(crate) async fn rgb_invoice(
     no_cancel(async move {
         let guard = state.check_unlocked().await?;
         let unlocked_state = guard.as_ref().unwrap();
+        let _rgb_wallet_operation = unlocked_state.lock_rgb_wallet_mutation()?;
 
         let assignment = payload.assignment.unwrap_or(Assignment::Any).into();
 
@@ -4988,6 +5018,7 @@ pub(crate) async fn send_btc(
     no_cancel(async move {
         let guard = state.check_unlocked().await?;
         let unlocked_state = guard.as_ref().unwrap();
+        let _rgb_wallet_operation = unlocked_state.lock_rgb_wallet_mutation()?;
 
         let txid = if unlocked_state.external_signer_mode {
             let unsigned_psbt = unlocked_state.rgb_send_btc_begin(
@@ -5219,6 +5250,8 @@ pub(crate) async fn send_payment(
                     )))
                 }
             };
+            let _rgb_payment_operation =
+                unlocked_state.lock_channel_payment(rgb_payment.is_some())?;
 
             if let Some((contract_id, asset_amount)) = rgb_payment {
                 if !has_sufficient_asset_channel(
@@ -5345,6 +5378,7 @@ pub(crate) async fn send_rgb(
     no_cancel(async move {
         let guard = state.check_unlocked().await?;
         let unlocked_state = guard.as_ref().unwrap();
+        let _rgb_wallet_operation = unlocked_state.lock_rgb_wallet_mutation()?;
 
         let recipient_map: HashMap<String, Vec<RgbLibRecipient>> = payload
             .recipient_map
@@ -5438,6 +5472,7 @@ pub(crate) async fn sync(
     no_cancel(async move {
         let guard = state.check_unlocked().await?;
         let unlocked_state = guard.as_ref().unwrap();
+        let _rgb_wallet_operation = unlocked_state.lock_rgb_wallet_mutation()?;
 
         unlocked_state.rgb_sync(payload.options.into())?;
 
@@ -5453,6 +5488,7 @@ pub(crate) async fn taker(
     no_cancel(async move {
         let guard = state.check_unlocked().await?;
         let unlocked_state = guard.as_ref().unwrap();
+        let _rgb_wallet_operation = unlocked_state.lock_rgb_wallet_mutation()?;
         let swapstring = SwapString::from_str(&payload.swapstring)
             .map_err(|e| APIError::InvalidSwapString(payload.swapstring.clone(), e.to_string()))?;
 
@@ -5569,6 +5605,7 @@ pub(crate) async fn vss_backup(
 ) -> Result<Json<serde_json::Value>, APIError> {
     let guard = state.check_unlocked().await?;
     let unlocked_state = guard.as_ref().unwrap().clone();
+    let _rgb_wallet_operation = unlocked_state.lock_rgb_wallet_mutation()?;
     drop(guard);
 
     let vss_client = unlocked_state

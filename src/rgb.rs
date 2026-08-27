@@ -1404,9 +1404,10 @@ impl WalletSource for RgbBumpWalletSource {
 impl ChangeDestinationSource for RgbChangeDestinationSource {
     fn get_change_destination_script<'a>(&'a self) -> AsyncResult<'a, ScriptBuf, ()> {
         Box::pin(async move {
-            let _financial_operation = self
+            let _rgb_wallet_operation = self
                 .funding_guard
-                .ensure_financial_operations_allowed()
+                .lock_output_sweeper_wallet_mutation()
+                .await
                 .map_err(|error| {
                     tracing::debug!(%error, "deferring change-address allocation during RGB funding");
                 })?;

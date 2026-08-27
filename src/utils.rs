@@ -226,11 +226,16 @@ pub(crate) struct UnlockedAppState {
 
 impl UnlockedAppState {
     #[allow(dead_code)]
-    pub(crate) fn ensure_financial_operations_allowed(
+    pub(crate) fn lock_rgb_wallet_mutation(&self) -> Result<RgbFundingOperationLease, APIError> {
+        self.rgb_funding_recovery_guard.lock_rgb_wallet_mutation()
+    }
+
+    pub(crate) fn lock_channel_payment(
         &self,
-    ) -> Result<RgbFundingOperationLease, APIError> {
+        carries_rgb: bool,
+    ) -> Result<Option<RgbFundingOperationLease>, APIError> {
         self.rgb_funding_recovery_guard
-            .ensure_financial_operations_allowed()
+            .lock_channel_payment(carries_rgb)
     }
 
     pub(crate) fn attach_apay_signatures(

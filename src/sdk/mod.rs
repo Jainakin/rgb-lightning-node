@@ -53,7 +53,7 @@ use lightning::ln::channelmanager::{
 use lightning::ln::types::ChannelId;
 use lightning::offers::offer::{self, Offer};
 use lightning::rgb_utils::RgbKvStoreExt;
-use lightning::rgb_utils::{RgbInfo, STATIC_BLINDING};
+use lightning::rgb_utils::{is_channel_rgb, RgbInfo, STATIC_BLINDING};
 use lightning::routing::gossip::NodeId;
 use lightning::routing::gossip::RoutingFees;
 use lightning::routing::router::{
@@ -1077,7 +1077,6 @@ pub(crate) async fn estimate_fee(
 ) -> Result<EstimateFeeData, APIError> {
     let guard = check_unlocked(&state).await?;
     let unlocked_state = guard.as_ref().unwrap();
-    let _financial_operation = unlocked_state.ensure_financial_operations_allowed()?;
     let fee_rate = unlocked_state.rgb_get_fee_estimation(blocks)?;
     Ok(EstimateFeeData { fee_rate })
 }
@@ -1098,8 +1097,6 @@ pub(crate) async fn check_proxy_endpoint(proxy_endpoint: String) -> Result<(), A
 pub(crate) async fn node_info(state: Arc<AppState>) -> Result<NodeInfoData, APIError> {
     let guard = check_unlocked(&state).await?;
     let unlocked_state = guard.as_ref().unwrap();
-    let _financial_operation = unlocked_state.ensure_financial_operations_allowed()?;
-
     let chans = unlocked_state.channel_manager.list_channels();
 
     let balances = unlocked_state.chain_monitor.get_claimable_balances(&[]);
@@ -1175,7 +1172,7 @@ pub(crate) async fn network_info(state: Arc<AppState>) -> Result<NetworkInfoData
 pub(crate) async fn address(state: Arc<AppState>) -> Result<AddressData, APIError> {
     let guard = check_unlocked(&state).await?;
     let unlocked_state = guard.as_ref().unwrap();
-    let _financial_operation = unlocked_state.ensure_financial_operations_allowed()?;
+    let _rgb_wallet_operation = unlocked_state.lock_rgb_wallet_mutation()?;
 
     Ok(AddressData {
         address: unlocked_state.rgb_get_address()?,
@@ -1185,7 +1182,7 @@ pub(crate) async fn address(state: Arc<AppState>) -> Result<AddressData, APIErro
 pub(crate) async fn rotate_address(state: Arc<AppState>) -> Result<AddressData, APIError> {
     let guard = check_unlocked(&state).await?;
     let unlocked_state = guard.as_ref().unwrap();
-    let _financial_operation = unlocked_state.ensure_financial_operations_allowed()?;
+    let _rgb_wallet_operation = unlocked_state.lock_rgb_wallet_mutation()?;
 
     Ok(AddressData {
         address: unlocked_state.rgb_rotate_address()?,
@@ -1199,7 +1196,7 @@ pub(crate) async fn async_order_new(
     let guard = check_unlocked(&state).await?;
     let unlocked_state = Arc::clone(guard.as_ref().unwrap());
     drop(guard);
-    let _financial_operation = unlocked_state.ensure_financial_operations_allowed()?;
+    let _rgb_wallet_operation = unlocked_state.lock_rgb_wallet_mutation()?;
 
     let host_node_id =
         hex_str_to_compressed_pubkey(&request.host_node_id).ok_or(APIError::InvalidPubkey)?;
@@ -1306,7 +1303,7 @@ pub(crate) async fn async_order_outbound_invoice(
     let guard = check_unlocked(&state).await?;
     let unlocked_state = Arc::clone(guard.as_ref().unwrap());
     drop(guard);
-    let _financial_operation = unlocked_state.ensure_financial_operations_allowed()?;
+    let _rgb_wallet_operation = unlocked_state.lock_rgb_wallet_mutation()?;
 
     let peer_node_id =
         hex_str_to_compressed_pubkey(&request.client_node_id).ok_or(APIError::InvalidPubkey)?;
@@ -1381,7 +1378,11 @@ pub(crate) async fn btc_balance(
 ) -> Result<BtcBalanceData, APIError> {
     let guard = check_unlocked(&state).await?;
     let unlocked_state = guard.as_ref().unwrap();
-    let _financial_operation = unlocked_state.ensure_financial_operations_allowed()?;
+    let _rgb_wallet_operation = if skip_sync {
+        None
+    } else {
+        Some(unlocked_state.lock_rgb_wallet_mutation()?)
+    };
     let btc_balance = unlocked_state.rgb_get_btc_balance(skip_sync)?;
 
     Ok(BtcBalanceData {
@@ -1580,8 +1581,6 @@ pub(crate) async fn asset_balance(
 ) -> Result<AssetBalanceData, APIError> {
     let guard = check_unlocked(&state).await?;
     let unlocked_state = guard.as_ref().unwrap();
-    let _financial_operation = unlocked_state.ensure_financial_operations_allowed()?;
-
     let contract_id =
         ContractId::from_str(&asset_id).map_err(|_| APIError::InvalidAssetID(asset_id))?;
     let balance = unlocked_state.rgb_get_asset_balance(contract_id)?;
@@ -1618,6 +1617,7 @@ pub(crate) async fn asset_link(
 ) -> Result<AssetLinkResponse, APIError> {
     let guard = check_unlocked(&state).await?;
     let unlocked_state = guard.as_ref().unwrap();
+    let _rgb_wallet_operation = unlocked_state.lock_rgb_wallet_mutation()?;
     create_asset_link(unlocked_state, params)
 }
 
@@ -1629,7 +1629,6 @@ pub(crate) async fn asset_metadata(
         ContractId::from_str(&asset_id).map_err(|_| APIError::InvalidAssetID(asset_id))?;
     let guard = check_unlocked(&state).await?;
     let unlocked_state = guard.as_ref().unwrap();
-    let _financial_operation = unlocked_state.ensure_financial_operations_allowed()?;
     let metadata = unlocked_state.rgb_get_asset_metadata(contract_id)?;
 
     Ok(AssetMetadataData {
@@ -1678,8 +1677,6 @@ pub(crate) async fn list_assets(
 ) -> Result<ListAssetsData, APIError> {
     let guard = check_unlocked(&state).await?;
     let unlocked_state = guard.as_ref().unwrap();
-    let _financial_operation = unlocked_state.ensure_financial_operations_allowed()?;
-
     let rgb_assets = unlocked_state.rgb_list_assets(filter_asset_schemas)?;
 
     let mut offchain_balances = HashMap::new();
@@ -1766,7 +1763,7 @@ pub(crate) async fn send_rgb(
 ) -> Result<SendRgbData, APIError> {
     let guard = check_unlocked(&state).await?;
     let unlocked_state = guard.as_ref().unwrap();
-    let _financial_operation = unlocked_state.ensure_financial_operations_allowed()?;
+    let _rgb_wallet_operation = unlocked_state.lock_rgb_wallet_mutation()?;
 
     let send_result = if unlocked_state.external_signer_mode {
         let unlocked_state_copy = unlocked_state.clone();
@@ -1912,7 +1909,7 @@ pub(crate) async fn init_with_external_signer(
 pub(crate) async fn vss_backup(state: Arc<AppState>) -> Result<i64, APIError> {
     let guard = check_unlocked(&state).await?;
     let unlocked_state = guard.as_ref().unwrap().clone();
-    let _financial_operation = unlocked_state.ensure_financial_operations_allowed()?;
+    let _rgb_wallet_operation = unlocked_state.lock_rgb_wallet_mutation()?;
     drop(guard);
 
     #[cfg(not(feature = "vss"))]
@@ -2231,13 +2228,16 @@ pub(crate) async fn close_channel(
 ) -> Result<(), APIError> {
     let guard = check_unlocked(&state).await?;
     let unlocked_state = guard.as_ref().unwrap();
-    let _financial_operation = unlocked_state.ensure_financial_operations_allowed()?;
 
     let channel_id_vec = hex_str_to_vec(&request.channel_id);
     if channel_id_vec.is_none() || channel_id_vec.as_ref().unwrap().len() != 32 {
         return Err(APIError::InvalidChannelID);
     }
     let requested_cid = ChannelId(channel_id_vec.unwrap().try_into().unwrap());
+    let _rgb_payment_operation = unlocked_state.lock_channel_payment(is_channel_rgb(
+        &requested_cid,
+        unlocked_state.kv_store.as_ref(),
+    ))?;
 
     let peer_pubkey_vec = match hex_str_to_vec(&request.peer_pubkey) {
         Some(peer_pubkey_vec) => peer_pubkey_vec,
@@ -2423,7 +2423,7 @@ pub(crate) async fn create_utxos(
 ) -> Result<(), APIError> {
     let guard = check_unlocked(&state).await?;
     let unlocked_state = guard.as_ref().unwrap();
-    let _financial_operation = unlocked_state.ensure_financial_operations_allowed()?;
+    let _rgb_wallet_operation = unlocked_state.lock_rgb_wallet_mutation()?;
 
     let num = request.num.unwrap_or(unlocked_state.config.rgb.utxo_num);
     let size = request
@@ -2472,7 +2472,7 @@ pub(crate) async fn issue_asset_nia(
 ) -> Result<AssetNIA, APIError> {
     let guard = check_unlocked(&state).await?;
     let unlocked_state = guard.as_ref().unwrap();
-    let _financial_operation = unlocked_state.ensure_financial_operations_allowed()?;
+    let _rgb_wallet_operation = unlocked_state.lock_rgb_wallet_mutation()?;
     if unlocked_state.external_signer_mode {
         return Err(APIError::UnsupportedInExternalSignerMode(
             "asset issuance is not supported in external signer mode".to_string(),
@@ -2495,7 +2495,7 @@ pub(crate) async fn issue_asset_cfa(
 ) -> Result<AssetCFA, APIError> {
     let guard = check_unlocked(&state).await?;
     let unlocked_state = guard.as_ref().unwrap();
-    let _financial_operation = unlocked_state.ensure_financial_operations_allowed()?;
+    let _rgb_wallet_operation = unlocked_state.lock_rgb_wallet_mutation()?;
     if unlocked_state.external_signer_mode {
         return Err(APIError::UnsupportedInExternalSignerMode(
             "asset issuance is not supported in external signer mode".to_string(),
@@ -2527,7 +2527,7 @@ pub(crate) async fn issue_asset_ifa(
 ) -> Result<AssetIFA, APIError> {
     let guard = check_unlocked(&state).await?;
     let unlocked_state = guard.as_ref().unwrap();
-    let _financial_operation = unlocked_state.ensure_financial_operations_allowed()?;
+    let _rgb_wallet_operation = unlocked_state.lock_rgb_wallet_mutation()?;
     if unlocked_state.external_signer_mode {
         return Err(APIError::UnsupportedInExternalSignerMode(
             "asset issuance is not supported in external signer mode".to_string(),
@@ -2553,7 +2553,7 @@ pub(crate) async fn issue_asset_uda(
 ) -> Result<AssetUDA, APIError> {
     let guard = check_unlocked(&state).await?;
     let unlocked_state = guard.as_ref().unwrap();
-    let _financial_operation = unlocked_state.ensure_financial_operations_allowed()?;
+    let _rgb_wallet_operation = unlocked_state.lock_rgb_wallet_mutation()?;
     if unlocked_state.external_signer_mode {
         return Err(APIError::UnsupportedInExternalSignerMode(
             "asset issuance is not supported in external signer mode".to_string(),
@@ -2592,7 +2592,6 @@ pub(crate) async fn keysend(
 ) -> Result<KeysendData, APIError> {
     let guard = check_unlocked(&state).await?;
     let unlocked_state = guard.as_ref().unwrap();
-    let _financial_operation = unlocked_state.ensure_financial_operations_allowed()?;
 
     let dest_pubkey_vec = match hex_str_to_vec(&request.dest_pubkey) {
         Some(peer_pubkey_vec) => peer_pubkey_vec,
@@ -2627,6 +2626,7 @@ pub(crate) async fn keysend(
             return Err(APIError::IncompleteRGBInfo);
         }
     };
+    let _rgb_payment_operation = unlocked_state.lock_channel_payment(rgb_payment.is_some())?;
 
     let route_params = RouteParameters::from_payment_params_and_value(
         PaymentParameters::for_keysend(dest_pubkey, 40, false),
@@ -2701,7 +2701,7 @@ pub(crate) async fn send_btc(
 ) -> Result<SendBtcData, APIError> {
     let guard = check_unlocked(&state).await?;
     let unlocked_state = guard.as_ref().unwrap();
-    let _financial_operation = unlocked_state.ensure_financial_operations_allowed()?;
+    let _rgb_wallet_operation = unlocked_state.lock_rgb_wallet_mutation()?;
 
     let txid = if unlocked_state.external_signer_mode {
         let unsigned_psbt =
@@ -2762,7 +2762,7 @@ pub(crate) async fn rgb_invoice(
 ) -> Result<RgbInvoiceData, APIError> {
     let guard = check_unlocked(&state).await?;
     let unlocked_state = guard.as_ref().unwrap();
-    let _financial_operation = unlocked_state.ensure_financial_operations_allowed()?;
+    let _rgb_wallet_operation = unlocked_state.lock_rgb_wallet_mutation()?;
 
     let assignment = match request.assignment_kind {
         Some(kind) => rgb_assignment_from_kind(kind, request.assignment_amount)?,
@@ -2806,7 +2806,7 @@ pub(crate) async fn open_channel(
 ) -> Result<OpenChannelData, APIError> {
     let guard = check_unlocked(&state).await?;
     let unlocked_state = guard.as_ref().unwrap();
-    let _financial_operation = unlocked_state.ensure_financial_operations_allowed()?;
+    let _rgb_wallet_operation = unlocked_state.lock_rgb_wallet_mutation()?;
 
     let is_virtual_open = match request.virtual_open_mode.as_deref() {
         None => false,
@@ -3151,7 +3151,6 @@ pub(crate) async fn send_payment(
 ) -> Result<SendPaymentData, APIError> {
     let guard = check_unlocked(&state).await?;
     let unlocked_state = guard.as_ref().unwrap();
-    let _financial_operation = unlocked_state.ensure_financial_operations_allowed()?;
 
     let mut status = HtlcStatus::Pending;
     let created_at = get_current_timestamp();
@@ -3284,6 +3283,7 @@ pub(crate) async fn send_payment(
                 )));
             }
         };
+        let _rgb_payment_operation = unlocked_state.lock_channel_payment(rgb_payment.is_some())?;
 
         if let Some((contract_id, asset_amount)) = rgb_payment {
             if !has_sufficient_asset_channel(unlocked_state, contract_id, asset_amount, amt_msat) {
@@ -3393,7 +3393,7 @@ pub(crate) async fn fail_transfers(
 ) -> Result<FailTransfersData, APIError> {
     let guard = check_unlocked(&state).await?;
     let unlocked_state = guard.as_ref().unwrap();
-    let _financial_operation = unlocked_state.ensure_financial_operations_allowed()?;
+    let _rgb_wallet_operation = unlocked_state.lock_rgb_wallet_mutation()?;
     let unlocked_state_copy = unlocked_state.clone();
 
     let transfers_changed = tokio::task::spawn_blocking(move || {
@@ -3415,7 +3415,7 @@ pub(crate) async fn refresh_transfers(
 ) -> Result<RefreshTransfersData, APIError> {
     let guard = check_unlocked(&state).await?;
     let unlocked_state = guard.as_ref().unwrap();
-    let _financial_operation = unlocked_state.ensure_financial_operations_allowed()?;
+    let _rgb_wallet_operation = unlocked_state.lock_rgb_wallet_mutation()?;
     let unlocked_state_copy = unlocked_state.clone();
 
     let refresh_result = tokio::task::spawn_blocking(move || {
@@ -3449,7 +3449,7 @@ pub(crate) async fn maker_execute(
 ) -> Result<(), APIError> {
     let guard = check_unlocked(&state).await?;
     let unlocked_state = guard.as_ref().unwrap();
-    let _financial_operation = unlocked_state.ensure_financial_operations_allowed()?;
+    let _rgb_wallet_operation = unlocked_state.lock_rgb_wallet_mutation()?;
 
     let swapstring = SwapString::from_str(&request.swapstring)
         .map_err(|e| APIError::InvalidSwapString(request.swapstring.clone(), e.to_string()))?;
@@ -3648,7 +3648,7 @@ pub(crate) async fn maker_init(
 ) -> Result<MakerInitData, APIError> {
     let guard = check_unlocked(&state).await?;
     let unlocked_state = guard.as_ref().unwrap();
-    let _financial_operation = unlocked_state.ensure_financial_operations_allowed()?;
+    let _rgb_wallet_operation = unlocked_state.lock_rgb_wallet_mutation()?;
 
     let from_asset = match &request.from_asset {
         None => None,
@@ -3713,7 +3713,7 @@ pub(crate) async fn maker_init(
 pub(crate) async fn taker(state: Arc<AppState>, request: TakerRequestData) -> Result<(), APIError> {
     let guard = check_unlocked(&state).await?;
     let unlocked_state = guard.as_ref().unwrap();
-    let _financial_operation = unlocked_state.ensure_financial_operations_allowed()?;
+    let _rgb_wallet_operation = unlocked_state.lock_rgb_wallet_mutation()?;
     let swapstring = SwapString::from_str(&request.swapstring)
         .map_err(|e| APIError::InvalidSwapString(request.swapstring.clone(), e.to_string()))?;
 
@@ -3790,7 +3790,7 @@ pub(crate) async fn send_onion_message(
 pub(crate) async fn sync(state: Arc<AppState>) -> Result<(), APIError> {
     let guard = check_unlocked(&state).await?;
     let unlocked_state = guard.as_ref().unwrap();
-    let _financial_operation = unlocked_state.ensure_financial_operations_allowed()?;
+    let _rgb_wallet_operation = unlocked_state.lock_rgb_wallet_mutation()?;
     unlocked_state.rgb_sync(rgb_lib::wallet::SyncOptions {
         keychain: rgb_lib::wallet::SyncKeychain::Colored,
         strategy: rgb_lib::wallet::SyncStrategy::FastSync,
@@ -3896,13 +3896,13 @@ pub(crate) async fn create_ln_invoice(
 ) -> Result<LnInvoiceData, APIError> {
     let guard = check_unlocked(&state).await?;
     let unlocked_state = guard.as_ref().unwrap();
-    let _financial_operation = unlocked_state.ensure_financial_operations_allowed()?;
 
     let contract_id = if let Some(asset_id) = asset_id {
         Some(ContractId::from_str(&asset_id).map_err(|_| APIError::InvalidAssetID(asset_id))?)
     } else {
         None
     };
+    let _rgb_payment_operation = unlocked_state.lock_channel_payment(contract_id.is_some())?;
 
     if let Some(contract_id) = &contract_id {
         // Only lower the floor when the asset is held in a virtual channel; a regular channel
@@ -4143,9 +4143,10 @@ pub(crate) async fn cancel_hodl_invoice(
 ) -> Result<(), APIError> {
     let guard = check_unlocked(&state).await?;
     let unlocked_state = guard.as_ref().unwrap();
-    let _financial_operation = unlocked_state.ensure_financial_operations_allowed()?;
 
     let payment_hash = validate_and_parse_payment_hash(&request.payment_hash)?;
+    let _rgb_payment_operation = unlocked_state
+        .lock_channel_payment(unlocked_state.kv_store.is_payment_rgb(&payment_hash))?;
     let payment_info = unlocked_state
         .get_inbound_payments()
         .payments
@@ -4173,9 +4174,10 @@ pub(crate) async fn claim_hodl_invoice(
 ) -> Result<ClaimHodlInvoiceResponseData, APIError> {
     let guard = check_unlocked(&state).await?;
     let unlocked_state = guard.as_ref().unwrap();
-    let _financial_operation = unlocked_state.ensure_financial_operations_allowed()?;
 
     let payment_hash = validate_and_parse_payment_hash(&request.payment_hash)?;
+    let _rgb_payment_operation = unlocked_state
+        .lock_channel_payment(unlocked_state.kv_store.is_payment_rgb(&payment_hash))?;
     let preimage = validate_and_parse_payment_preimage(&request.payment_preimage, &payment_hash)?;
 
     let terminal_error = {
@@ -4252,7 +4254,7 @@ pub(crate) async fn inflate(
 ) -> Result<InflateResponseData, APIError> {
     let guard = check_unlocked(&state).await?;
     let unlocked_state = guard.as_ref().unwrap();
-    let _financial_operation = unlocked_state.ensure_financial_operations_allowed()?;
+    let _rgb_wallet_operation = unlocked_state.lock_rgb_wallet_mutation()?;
     if unlocked_state.external_signer_mode {
         return Err(APIError::UnsupportedInExternalSignerMode(
             "inflate is not supported in external signer mode".to_string(),
@@ -4292,10 +4294,21 @@ fn map_swap(
     }
     let current_status: SwapStatus = swap_data.status;
     if status != current_status {
-        if taker {
-            state.update_taker_swap_status(payment_hash, status);
-        } else {
-            state.update_maker_swap_status(payment_hash, status);
+        match state.lock_rgb_wallet_mutation() {
+            Ok(_rgb_wallet_operation) => {
+                if taker {
+                    state.update_taker_swap_status(payment_hash, status);
+                } else {
+                    state.update_maker_swap_status(payment_hash, status);
+                }
+            }
+            Err(error) => {
+                tracing::debug!(
+                    %error,
+                    %payment_hash,
+                    "returning derived swap status without persisting it"
+                );
+            }
         }
     }
 
@@ -4437,7 +4450,11 @@ pub(crate) async fn list_transactions(
 ) -> Result<Vec<TransactionData>, APIError> {
     let guard = check_unlocked(&state).await?;
     let unlocked_state = guard.as_ref().unwrap();
-    let _financial_operation = unlocked_state.ensure_financial_operations_allowed()?;
+    let _rgb_wallet_operation = if skip_sync {
+        None
+    } else {
+        Some(unlocked_state.lock_rgb_wallet_mutation()?)
+    };
 
     Ok(unlocked_state
         .rgb_list_transactions(skip_sync)?
@@ -4454,8 +4471,6 @@ pub(crate) async fn list_transfers(
 ) -> Result<Vec<TransferData>, APIError> {
     let guard = check_unlocked(&state).await?;
     let unlocked_state = guard.as_ref().unwrap();
-    let _financial_operation = unlocked_state.ensure_financial_operations_allowed()?;
-
     if asset_id.is_none() && txid.is_none() {
         return Err(APIError::InvalidRequest(s!(
             "either asset_id or txid must be provided"
@@ -4478,7 +4493,11 @@ pub(crate) async fn list_unspents(
 ) -> Result<Vec<UnspentData>, APIError> {
     let guard = check_unlocked(&state).await?;
     let unlocked_state = guard.as_ref().unwrap();
-    let _financial_operation = unlocked_state.ensure_financial_operations_allowed()?;
+    let _rgb_wallet_operation = if skip_sync {
+        None
+    } else {
+        Some(unlocked_state.lock_rgb_wallet_mutation()?)
+    };
 
     let mut unspents = vec![];
     for unspent in unlocked_state.rgb_list_unspents(false, skip_sync)? {

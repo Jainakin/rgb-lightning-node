@@ -148,6 +148,7 @@ const MAKER_SWAPS_KEY: &str = "maker_swaps";
 const TAKER_SWAPS_KEY: &str = "taker_swaps";
 const ASSET_LINK_SWAP_AUTHORIZATION_MAX_EXPIRY_SECS: u64 = 24 * 60 * 60;
 const OUTPUT_SPENDER_TXES_KEY: &str = "output_spender_txes";
+const OUTPUT_SWEEPER_WALLET_OPERATION_WAIT: Duration = Duration::from_secs(1);
 pub(crate) const PSBT_NAMESPACE: &str = crate::synced_kv_store::PSBT_NAMESPACE;
 pub(crate) const PENDING_FUNDING_NAMESPACE: &str =
     crate::synced_kv_store::PENDING_FUNDING_NAMESPACE;
@@ -348,7 +349,7 @@ impl RgbFundingRecoveryAction {
 ///
 /// An unresolved sender or receiver journal can represent a transaction whose broadcast outcome
 /// or matching LDK channel state is not yet known. Read-only inspection and recovery remain
-/// available, but new financial mutations must not be admitted until every record is reconciled.
+/// available, but new RGB-wallet mutations must not be admitted until every record is reconciled.
 ///
 /// The operation lease is intentionally wallet-wide. rgb-lib currently persists one pending RGB
 /// acceptance and one rollback snapshot for the wallet, not one per funding allocation. Allowing
@@ -436,25 +437,63 @@ impl RgbFundingRecoveryGuard {
             .insert(funding_txid.to_owned());
     }
 
-    pub(crate) fn ensure_financial_operations_allowed(
-        &self,
-    ) -> Result<RgbFundingOperationLease, APIError> {
+    pub(crate) fn lock_rgb_wallet_mutation(&self) -> Result<RgbFundingOperationLease, APIError> {
         // Admission and execution must be one atomic lease. A check-only gate permits a funding
         // transition to start immediately after the check, allowing its rollback snapshot to
         // overwrite a concurrent wallet mutation.
         let operation = Arc::clone(&self.operation_lock)
             .try_lock_owned()
             .map_err(|_| APIError::ChangingState)?;
+        self.ensure_wallet_mutation_is_admitted()?;
+        Ok(RgbFundingOperationLease::new(operation, "rgb-wallet-api"))
+    }
+
+    async fn lock_rgb_wallet_mutation_for(
+        &self,
+        wait: Duration,
+        owner: &'static str,
+    ) -> Result<RgbFundingOperationLease, APIError> {
+        self.ensure_wallet_mutation_is_admitted()?;
+        let operation = tokio::time::timeout(wait, Arc::clone(&self.operation_lock).lock_owned())
+            .await
+            .map_err(|_| APIError::ChangingState)?;
+        self.ensure_wallet_mutation_is_admitted()?;
+        Ok(RgbFundingOperationLease::new(operation, owner))
+    }
+
+    /// Give LDK's infrequent output sweep a bounded, fair chance to follow a short wallet API
+    /// mutation. The bound keeps the background processor responsive during long funding work.
+    pub(crate) async fn lock_output_sweeper_wallet_mutation(
+        &self,
+    ) -> Result<RgbFundingOperationLease, APIError> {
+        self.lock_rgb_wallet_mutation_for(OUTPUT_SWEEPER_WALLET_OPERATION_WAIT, "output-sweeper")
+            .await
+    }
+
+    fn ensure_wallet_mutation_is_admitted(&self) -> Result<(), APIError> {
         let funding_txids = self.funding_txids.read().unwrap_or_else(|poisoned| {
             tracing::error!("RGB funding recovery guard was poisoned; preserving quarantine");
             poisoned.into_inner()
         });
         if funding_txids.is_empty() {
-            return Ok(RgbFundingOperationLease::new(operation, "financial-api"));
+            return Ok(());
         }
         Err(APIError::RgbFundingRecoveryRequired(
             funding_txids.iter().cloned().collect::<Vec<_>>().join(","),
         ))
+    }
+
+    /// Existing BTC-only Lightning traffic does not touch rgb-lib's stock or rollback snapshot and
+    /// must remain available while an unrelated RGB funding record is quarantined. RGB channel
+    /// payments retain the wallet-wide lease until rgb-lib can isolate concurrent stock journals
+    /// by allocation.
+    pub(crate) fn lock_channel_payment(
+        &self,
+        carries_rgb: bool,
+    ) -> Result<Option<RgbFundingOperationLease>, APIError> {
+        carries_rgb
+            .then(|| self.lock_rgb_wallet_mutation())
+            .transpose()
     }
 
     #[cfg(test)]
@@ -6327,9 +6366,9 @@ impl RgbOutputSpender {
         locktime: Option<LockTime>,
         secp_ctx: &Secp256k1<All>,
     ) -> Result<bitcoin::Transaction, String> {
-        let _financial_operation = self
+        let _rgb_wallet_operation = self
             .rgb_funding_recovery_guard
-            .ensure_financial_operations_allowed()
+            .lock_rgb_wallet_mutation()
             .map_err(|error| {
                 tracing::debug!(%error, "deferring RGB output sweep during funding transition");
                 error.to_string()
@@ -8283,7 +8322,7 @@ pub(crate) async fn start_ldk(
                     .iter()
                     .map(|recovery| recovery.funding_txid.as_str())
                     .collect::<Vec<_>>(),
-                "financial operations are quarantined pending RGB funding recovery"
+                "RGB wallet mutations are quarantined pending funding recovery"
             );
         }
     }
@@ -9947,7 +9986,7 @@ mod tests {
         let guard = RgbFundingRecoveryGuard::default();
         guard.replace(&[recovery]);
         assert!(matches!(
-            guard.ensure_financial_operations_allowed(),
+            guard.lock_rgb_wallet_mutation(),
             Err(APIError::RgbFundingRecoveryRequired(ref txid))
                 if txid == &record.funding_txid
         ));
@@ -10086,29 +10125,122 @@ mod tests {
 
         assert_eq!(guard.snapshot(), vec![first.clone(), second.clone()]);
         assert!(matches!(
-            guard.ensure_financial_operations_allowed(),
+            guard.lock_rgb_wallet_mutation(),
             Err(APIError::RgbFundingRecoveryRequired(ref txids))
                 if txids == &format!("{first},{second}")
         ));
 
         guard.clear(&first);
-        assert!(guard.ensure_financial_operations_allowed().is_err());
+        assert!(guard.lock_rgb_wallet_mutation().is_err());
         guard.clear(&second);
-        assert!(guard.ensure_financial_operations_allowed().is_ok());
+        assert!(guard.lock_rgb_wallet_mutation().is_ok());
     }
 
     #[test]
-    fn financial_operation_admission_holds_an_exclusive_lease() {
+    fn rgb_wallet_mutation_admission_holds_an_exclusive_lease() {
         let guard = RgbFundingRecoveryGuard::default();
 
-        let operation = guard.ensure_financial_operations_allowed().unwrap();
+        let operation = guard.lock_rgb_wallet_mutation().unwrap();
         assert!(matches!(
-            guard.ensure_financial_operations_allowed(),
+            guard.lock_rgb_wallet_mutation(),
             Err(APIError::ChangingState)
         ));
 
         drop(operation);
-        assert!(guard.ensure_financial_operations_allowed().is_ok());
+        assert!(guard.lock_rgb_wallet_mutation().is_ok());
+    }
+
+    #[tokio::test]
+    async fn output_sweeper_waits_for_a_short_wallet_mutation() {
+        let guard = Arc::new(RgbFundingRecoveryGuard::default());
+        let operation = guard.lock_rgb_wallet_mutation().unwrap();
+        let waiter_guard = Arc::clone(&guard);
+        let waiter = tokio::spawn(async move {
+            waiter_guard
+                .lock_rgb_wallet_mutation_for(Duration::from_secs(1), "test-sweeper")
+                .await
+        });
+
+        tokio::task::yield_now().await;
+        drop(operation);
+
+        let sweep_operation = tokio::time::timeout(Duration::from_secs(1), waiter)
+            .await
+            .expect("sweeper admission should not remain blocked")
+            .expect("sweeper admission task should not panic")
+            .expect("sweeper should acquire the released wallet lease");
+        drop(sweep_operation);
+        assert!(guard.lock_rgb_wallet_mutation().is_ok());
+    }
+
+    #[tokio::test]
+    async fn output_sweeper_wait_is_bounded() {
+        let guard = RgbFundingRecoveryGuard::default();
+        let _operation = guard.lock_rgb_wallet_mutation().unwrap();
+
+        assert!(matches!(
+            guard
+                .lock_rgb_wallet_mutation_for(Duration::from_millis(10), "test-sweeper")
+                .await,
+            Err(APIError::ChangingState)
+        ));
+    }
+
+    #[tokio::test]
+    async fn output_sweeper_remains_blocked_by_recovery_quarantine() {
+        let guard = RgbFundingRecoveryGuard::default();
+        let funding_txid = "11".repeat(32);
+        guard.replace(&[RgbFundingRecoveryState {
+            funding_txid: funding_txid.clone(),
+            temporary_channel_id: "01".repeat(32),
+            final_channel_id: Some("02".repeat(32)),
+            stage: RgbFundingRecoveryStage::Sender(RgbSenderFundingStage::Broadcasting),
+            channel_is_durable: false,
+            transaction_is_known: None,
+            error: Some("indexer unavailable".to_owned()),
+            action: RgbFundingRecoveryAction::RetryChainObservation,
+        }]);
+
+        assert!(matches!(
+            guard.lock_output_sweeper_wallet_mutation().await,
+            Err(APIError::RgbFundingRecoveryRequired(ref blocked_txid))
+                if blocked_txid == &funding_txid
+        ));
+    }
+
+    #[test]
+    fn btc_channel_payments_bypass_rgb_recovery_quarantine() {
+        let guard = RgbFundingRecoveryGuard::default();
+        let funding_txid = "11".repeat(32);
+        guard.replace(&[RgbFundingRecoveryState {
+            funding_txid: funding_txid.clone(),
+            temporary_channel_id: "01".repeat(32),
+            final_channel_id: Some("02".repeat(32)),
+            stage: RgbFundingRecoveryStage::Sender(RgbSenderFundingStage::Broadcasting),
+            channel_is_durable: false,
+            transaction_is_known: None,
+            error: Some("indexer unavailable".to_owned()),
+            action: RgbFundingRecoveryAction::RetryChainObservation,
+        }]);
+
+        assert!(matches!(guard.lock_channel_payment(false), Ok(None)));
+        assert!(matches!(
+            guard.lock_channel_payment(true),
+            Err(APIError::RgbFundingRecoveryRequired(ref blocked_txid))
+                if blocked_txid == &funding_txid
+        ));
+    }
+
+    #[test]
+    fn btc_channel_payments_bypass_an_active_rgb_wallet_mutation() {
+        let guard = RgbFundingRecoveryGuard::default();
+        let _rgb_wallet_operation = guard.lock_rgb_wallet_mutation().unwrap();
+
+        assert!(matches!(guard.lock_channel_payment(false), Ok(None)));
+        assert!(matches!(
+            guard.lock_channel_payment(true),
+            Err(APIError::ChangingState)
+        ));
     }
 
     #[test]
