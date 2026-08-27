@@ -366,6 +366,9 @@ pub enum APIError {
     #[error("Recipient ID already used")]
     RecipientIDAlreadyUsed,
 
+    #[error("RGB funding recovery is required before financial operations can continue: {0}")]
+    RgbFundingRecoveryRequired(String),
+
     #[error("Swap not found: {0}")]
     SwapNotFound(String),
 
@@ -476,6 +479,7 @@ impl From<RgbLibError> for APIError {
             RgbLibError::InsufficientBitcoins { needed, available } => {
                 APIError::InsufficientFunds(needed - available)
             }
+            RgbLibError::RgbOperationInProgress { .. } => APIError::ChangingState,
             RgbLibError::InvalidAddress { details } => APIError::InvalidAddress(details),
             RgbLibError::InvalidAmountZero => APIError::InvalidAmount(s!("0")),
             RgbLibError::InvalidAssignment => APIError::InvalidAssignment,
@@ -661,6 +665,7 @@ impl IntoResponse for APIError {
             | APIError::NotInitialized
             | APIError::PaymentNotFound(_)
             | APIError::RecipientIDAlreadyUsed
+            | APIError::RgbFundingRecoveryRequired(_)
             | APIError::SwapNotFound(_)
             | APIError::TemporaryChannelIdAlreadyUsed
             | APIError::UnknownChannelId

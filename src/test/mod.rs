@@ -21,7 +21,9 @@ use lightning::chain::transaction::TransactionData;
 use lightning::chain::{Confirm, Filter};
 use lightning::ln::channelmanager::DROP_FUNDING_SIGNED_ON_NODE;
 use lightning::rgb_utils::{
-    RgbPaymentInfo, RGB_PAYMENT_INFO_INBOUND_NS, RGB_PAYMENT_INFO_OUTBOUND_NS, RGB_PRIMARY_NS,
+    read_pending_funding_acceptance, FundingAcceptanceStage, PendingFundingAcceptance,
+    RgbPaymentInfo, RGB_FUNDING_ACCEPTANCE_NS, RGB_PAYMENT_INFO_INBOUND_NS,
+    RGB_PAYMENT_INFO_OUTBOUND_NS, RGB_PRIMARY_NS,
 };
 use lightning::util::hash_tables::new_hash_map;
 use lightning::util::persist::KVStoreSync;
@@ -2377,7 +2379,7 @@ async fn open_channel_request_raw(
     temporary_channel_id: Option<&str>,
     with_anchors: bool,
     public: bool,
-) -> Result<OpenChannelResponse, Response> {
+) -> Result<OpenChannelResponse, Box<Response>> {
     println!(
         "opening channel with {asset_amount:?} of asset {asset_id:?} from node {node_address} \
               to {dest_peer_pubkey}"
@@ -2424,7 +2426,7 @@ async fn open_channel_request_raw(
 
     let status = res.status();
     if !status.is_success() {
-        return Err(res);
+        return Err(Box::new(res));
     }
 
     Ok(res.json::<OpenChannelResponse>().await.unwrap())
@@ -2446,7 +2448,7 @@ async fn open_channel_funded_raw(
     temporary_channel_id: Option<&str>,
     with_anchors: bool,
     public: bool,
-) -> Result<Channel, Response> {
+) -> Result<Channel, Box<Response>> {
     open_channel_request_raw(
         node_address,
         dest_peer_pubkey,
@@ -2496,12 +2498,12 @@ async fn open_channel_funded_raw(
         }
         if (OffsetDateTime::now_utc() - t_0).as_seconds_f32() > 50.0 {
             println!("cannot find funding TX for channel to {dest_peer_pubkey}");
-            return Err(Response::from(
+            return Err(Box::new(Response::from(
                 Builder::new()
                     .status(reqwest::StatusCode::FORBIDDEN)
                     .body("")
                     .unwrap(),
-            ));
+            )));
         }
     }
     let channel_id = channel_id.unwrap();
@@ -3021,7 +3023,7 @@ fn default_ldk_chain_sync() -> LdkChainSync {
     return LdkChainSync::BlockSync {
         bitcoind_rpc_username: s!("user"),
         bitcoind_rpc_password: s!("password"),
-        bitcoind_rpc_host: s!("localhost"),
+        bitcoind_rpc_host: s!("127.0.0.1"),
         bitcoind_rpc_port: 18443,
     };
     #[cfg(not(feature = "block-sync"))]
@@ -3482,6 +3484,9 @@ mod drop_funding_signed;
 mod electrum_opret_confirm;
 mod esplora_indexer_defaults;
 mod fail_transfers;
+mod funding_crash_recovery;
+#[cfg(debug_assertions)]
+mod funding_crash_sender;
 mod getchannelid;
 mod gossip_p2p;
 mod gossip_rgs;

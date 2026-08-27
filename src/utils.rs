@@ -39,7 +39,10 @@ use tokio_util::sync::CancellationToken;
 use crate::asset_link::AssetLinkMessageHandler;
 use crate::async_order::{AsyncOrderMessageHandler, AsyncPaymentsPreimageRoot};
 use crate::crypto::{decrypt_mnemonic, encrypt_mnemonic};
-use crate::ldk::{ChannelIdsMap, Router, VirtualChannelDraftStore, VirtualChannelSessionStore};
+use crate::ldk::{
+    ChannelIdsMap, RgbFundingOperationLease, RgbFundingRecoveryGuard, Router,
+    VirtualChannelDraftStore, VirtualChannelSessionStore,
+};
 use crate::rgb::{get_rgb_channel_info_optional, RgbLibWalletWrapper};
 use crate::rgb_file_transfer::RgbFileTransferHandler;
 use crate::signer::{
@@ -218,9 +221,18 @@ pub(crate) struct UnlockedAppState {
     pub(crate) virtual_channel_draft_store: Arc<Mutex<VirtualChannelDraftStore>>,
     pub(crate) virtual_channel_session_store: Arc<Mutex<VirtualChannelSessionStore>>,
     pub(crate) next_payment_idx: Arc<std::sync::atomic::AtomicU64>,
+    pub(crate) rgb_funding_recovery_guard: Arc<RgbFundingRecoveryGuard>,
 }
 
 impl UnlockedAppState {
+    #[allow(dead_code)]
+    pub(crate) fn ensure_financial_operations_allowed(
+        &self,
+    ) -> Result<RgbFundingOperationLease, APIError> {
+        self.rgb_funding_recovery_guard
+            .ensure_financial_operations_allowed()
+    }
+
     pub(crate) fn attach_apay_signatures(
         &self,
         mut params: crate::async_order::AsyncOrderNewParamsWire,

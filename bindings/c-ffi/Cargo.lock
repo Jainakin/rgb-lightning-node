@@ -2222,6 +2222,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "fs2"
+version = "0.4.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9564fc758e15025b46aa6643b1b77d047d1a56a1aea6e01002ac0c7026876213"
+dependencies = [
+ "libc",
+ "winapi",
+]
+
+[[package]]
 name = "fs_extra"
 version = "1.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4762,7 +4772,7 @@ dependencies = [
 [[package]]
 name = "rgb-lib"
 version = "0.3.0-beta.7"
-source = "git+https://github.com/dcorral/rgb-lib.git?rev=94b6221ea9bf04562d89c21c9f074f4ecfbddd5d#94b6221ea9bf04562d89c21c9f074f4ecfbddd5d"
+source = "git+https://github.com/Jainakin/rgb-lib.git?rev=22c76737894db67caa2b0743e4c258ba8c2422f0#22c76737894db67caa2b0743e4c258ba8c2422f0"
 dependencies = [
  "amplify",
  "base64 0.22.1",
@@ -4771,8 +4781,10 @@ dependencies = [
  "bdk_wallet",
  "chacha20poly1305 0.11.0",
  "file-format",
+ "fs2",
  "hex",
  "hkdf 0.12.4",
+ "nonasync",
  "rand 0.10.2",
  "reqwest 0.13.4",
  "rgb-invoicing",
@@ -4805,7 +4817,7 @@ dependencies = [
 [[package]]
 name = "rgb-lib-migration"
 version = "0.3.0-beta.5"
-source = "git+https://github.com/dcorral/rgb-lib.git?rev=94b6221ea9bf04562d89c21c9f074f4ecfbddd5d#94b6221ea9bf04562d89c21c9f074f4ecfbddd5d"
+source = "git+https://github.com/Jainakin/rgb-lib.git?rev=22c76737894db67caa2b0743e4c258ba8c2422f0#22c76737894db67caa2b0743e4c258ba8c2422f0"
 dependencies = [
  "sea-orm-migration 2.0.2",
  "tokio",
@@ -6012,7 +6024,7 @@ dependencies = [
 [[package]]
 name = "signer-external"
 version = "0.1.0-alpha"
-source = "git+https://github.com/UTEXO-Protocol/rln-external-signer.git?branch=main#0fb005ec4b927ddbe13e1646d247b5bb11e8ffed"
+source = "git+https://github.com/UTEXO-Protocol/rln-external-signer.git?rev=0fb005ec4b927ddbe13e1646d247b5bb11e8ffed#0fb005ec4b927ddbe13e1646d247b5bb11e8ffed"
 dependencies = [
  "base64 0.22.1",
  "bitcoin",
@@ -7750,7 +7762,7 @@ version = "0.1.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c2a7b1c03c876122aa43f3020e6c3c3ee5c05081c9a00739faf7503aeba10d22"
 dependencies = [
- "windows-sys 0.61.2",
+ "windows-sys 0.48.0",
 ]
 
 [[package]]

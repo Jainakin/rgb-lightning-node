@@ -393,6 +393,19 @@ fn map_transfer(t: crate::sdk::TransferData) -> Result<Transfer, RlnError> {
     })
 }
 
+#[cfg(feature = "test-utils")]
+pub(crate) fn channel_has_inflight_htlcs_for_tests(
+    node: &SdkNode,
+    channel_id: &str,
+) -> Result<bool, RlnError> {
+    let channels = block_on_sdk(sdk::list_channels(node.handle.app_state()))?;
+    channels
+        .into_iter()
+        .find(|channel| channel.channel_id == channel_id)
+        .map(|channel| channel.has_inflight_htlcs)
+        .ok_or_else(|| RlnError::NotFound(format!("channel not found: {channel_id}")))
+}
+
 impl SdkNode {
     pub fn create(request: SdkInitRequest) -> Result<Self, RlnError> {
         let handle = handle_from_request(request)?;

@@ -89,6 +89,8 @@ jobs:
           components: llvm-tools-preview
           toolchain: stable
           rustflags: ""
+      - name: Build daemon binary for process-crash tests
+        run: cargo build --bin rgb-lightning-node
       - name: Install llvm-cov
         env:
           LLVM_COV_RELEASES: https://github.com/taiki-e/cargo-llvm-cov/releases
@@ -160,6 +162,11 @@ jobs:
         run: cargo test --features "uniffi,test-utils,vls,vss" --bin rgb-lightning-node ldk::vss_teardown_tests -- --test-threads=1
       - name: Start regtest and VSS services
         run: VSS=1 ./regtest.sh start
+      - name: Run RGB channel-info device-loss durability regression
+        run: >-
+          cargo test --features vss
+          "test::vss_durability_gaps::tests::acknowledged_rgb_channel_info"
+          -- --test-threads=1
       - name: Run VSS tests (e2e against regtest + VSS server)
         run: SKIP_INIT=1 cargo test --features vss "test::vss::tests" -- --test-threads=1
       - name: Run VSS unreachable openchannel e2e test

@@ -10,6 +10,9 @@ use crate::error::APIError;
 use crate::utils::{AppState, StaticState};
 use crate::{NodeHandle, RlnError};
 
+#[cfg(feature = "uniffi")]
+use bitcoin::hex::DisplayHex;
+
 pub struct TestAppState(Arc<AppState>);
 
 pub fn mock_locked_app_state() -> TestAppState {
@@ -65,6 +68,19 @@ pub fn clear_uniffi_state_for_tests() {
 
 pub fn node_handle_from_mock_state_for_tests(state: &TestAppState) -> NodeHandle {
     NodeHandle::from_app_state(state.0.clone())
+}
+
+#[cfg(feature = "uniffi")]
+pub fn channel_has_inflight_htlcs(
+    node: &crate::SdkNode,
+    channel_id: crate::ChannelId,
+) -> Result<bool, RlnError> {
+    let channel_id = channel_id.0.as_hex().to_string();
+    crate::uniffi_api::channel_has_inflight_htlcs_for_tests(node, &channel_id)
+}
+
+pub fn processed_channel_ready_event_participants(channel_id: crate::ChannelId) -> usize {
+    crate::ldk::processed_channel_ready_event_participants(&channel_id)
 }
 
 pub struct ErrorMappingSnapshot {
