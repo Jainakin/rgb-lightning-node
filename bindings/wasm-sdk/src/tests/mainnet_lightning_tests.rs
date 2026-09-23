@@ -139,8 +139,15 @@ async fn mainnet_wallet_remains_available_and_adopted_network_restricts_lightnin
         .expect("on-chain address")
         .starts_with("bc1"));
     let node = RlnWasmNode::new("ws://mainnet-wallet-guard.invalid".to_string()).unwrap();
+    // Model an already-running reconnect manager without starting timers or opening sockets.
+    *node.reconnect_manager_running.borrow_mut() = true;
     node.attach_wallet(&wallet).expect("adopt mainnet wallet");
     assert_eq!(node.network.borrow().as_str(), "mainnet");
+    let backoff_before = *node.reconnect_manager_backoff_ms.borrow();
+    assert_mainnet_rejection(node.reconnect_manager_on_resume());
+    assert_eq!(*node.reconnect_manager_backoff_ms.borrow(), backoff_before);
+    assert!(node.peers.borrow().is_empty());
+    *node.reconnect_manager_running.borrow_mut() = false;
     {
         let _busy_wallet = wallet.inner.borrow_mut();
         assert_mainnet_rejection(node.list_channels_json());

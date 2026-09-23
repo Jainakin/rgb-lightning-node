@@ -65,3 +65,6 @@ LightningUnsupportedOnMainnet: RLN on mainnet currently supports only on-chain m
 `LightningUnsupportedOnMainnet` is the machine-readable identifier before `: `.
 The configured node network controls the restriction, not the network encoded in
 an invoice. On-chain methods retain their existing errors and requirements.
+The dedicated funding builder retains its existing amount/script validation and
+wallet-access requirements before checking the network; it rejects mainnet before
+constructing or signing a funding transaction.
