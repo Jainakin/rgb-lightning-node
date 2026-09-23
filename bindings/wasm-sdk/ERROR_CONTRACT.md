@@ -52,3 +52,16 @@ If an RLN-native operation is intentionally unavailable in WASM, it must return 
 
 Current examples of intentionally unsupported-by-design functionality are documented in
 `SDK_WASM_ENDPOINT_MATRIX.md` (for example UDA issuance).
+
+## Mainnet Lightning errors
+
+Configured-node Lightning APIs and the wallet's dedicated Lightning funding builder
+return this stable string on mainnet, including through JSON and SDK-handle wrappers:
+
+```text
+LightningUnsupportedOnMainnet: RLN on mainnet currently supports only on-chain methods. Lightning APIs are not supported.
+```
+
+`LightningUnsupportedOnMainnet` is the machine-readable identifier before `: `.
+The configured node network controls the restriction, not the network encoded in
+an invoice. On-chain methods retain their existing errors and requirements.

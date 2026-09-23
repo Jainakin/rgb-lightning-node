@@ -90,6 +90,10 @@ mod uniffi_smoke_tests {
     }
 
     fn mock_locked_state() -> Arc<AppState> {
+        mock_locked_state_for_network(BitcoinNetwork::Regtest)
+    }
+
+    fn mock_locked_state_for_network(network: BitcoinNetwork) -> Arc<AppState> {
         let tmp = tempfile::tempdir().unwrap();
         let db_path = tmp.path().join("rln_db");
         let connection_string = format!("sqlite:{}?mode=rwc", db_path.display());
@@ -100,7 +104,7 @@ mod uniffi_smoke_tests {
             static_state: Arc::new(StaticState {
                 config: Default::default(),
                 ldk_peer_listening_port: 9735,
-                network: BitcoinNetwork::Regtest,
+                network,
                 storage_dir_path: tmp.path().to_path_buf(),
                 ldk_data_dir: tmp.path().join(".ldk"),
                 logger: Arc::new(FilesystemLogger::new(tmp.path().to_path_buf())),
@@ -127,6 +131,65 @@ mod uniffi_smoke_tests {
             root_public_key: None,
             revoked_tokens: Arc::new(Mutex::new(HashSet::new())),
         })
+    }
+
+    fn ln_invoice_request() -> LnInvoiceRequest {
+        LnInvoiceRequest {
+            amt_msat: Some(1000),
+            expiry_sec: 3600,
+            asset_id: None,
+            asset_amount: None,
+            payment_hash: None,
+            description: None,
+            description_hash: None,
+            min_final_cltv_expiry_delta: None,
+        }
+    }
+
+    #[test]
+    #[serial(uniffi_state)]
+    fn uniffi_global_mainnet_lightning_restriction_preserves_wallet_requirements() {
+        for network in [BitcoinNetwork::Mainnet, BitcoinNetwork::Regtest] {
+            set_uniffi_app_state(mock_locked_state_for_network(network));
+            match sdk_ln_invoice(ln_invoice_request()) {
+                Err(RlnError::LightningUnsupportedOnMainnet(message))
+                    if network == BitcoinNetwork::Mainnet =>
+                {
+                    assert_eq!(message, "RLN on mainnet currently supports only on-chain methods. Lightning APIs are not supported.");
+                }
+                Err(RlnError::NotInitialized(_)) if network == BitcoinNetwork::Regtest => {}
+                _ => panic!("unexpected Lightning result for {network:?}"),
+            }
+            assert!(matches!(
+                sdk_btc_balance(true),
+                Err(RlnError::NotInitialized(_))
+            ));
+            assert!(matches!(sdk_node_info(), Err(RlnError::NotInitialized(_))));
+            clear_uniffi_app_state();
+        }
+    }
+
+    #[test]
+    fn uniffi_instance_mainnet_lightning_restriction_preserves_wallet_requirements() {
+        for network in [BitcoinNetwork::Mainnet, BitcoinNetwork::Regtest] {
+            let node = SdkNode {
+                handle: crate::NodeHandle::from_app_state(mock_locked_state_for_network(network)),
+            };
+            match node.ln_invoice(ln_invoice_request()) {
+                Err(RlnError::LightningUnsupportedOnMainnet(message))
+                    if network == BitcoinNetwork::Mainnet =>
+                {
+                    assert_eq!(message, "RLN on mainnet currently supports only on-chain methods. Lightning APIs are not supported.");
+                }
+                Err(RlnError::NotInitialized(_)) if network == BitcoinNetwork::Regtest => {}
+                _ => panic!("unexpected Lightning result for {network:?}"),
+            }
+            assert!(matches!(
+                node.btc_balance(true),
+                Err(RlnError::NotInitialized(_))
+            ));
+            assert!(matches!(node.node_info(), Err(RlnError::NotInitialized(_))));
+        }
     }
 
     #[test]
@@ -361,6 +424,21 @@ mod uniffi_smoke_tests {
             super::super::state::map_api_error(crate::error::APIError::WrongPassword),
             RlnError::InvalidRequest(_)
         ));
+    }
+
+    #[test]
+    fn uniffi_mainnet_lightning_error_preserves_category_and_message() {
+        let err = super::super::state::map_api_error(
+            crate::error::APIError::LightningUnsupportedOnMainnet,
+        );
+        assert!(matches!(err, RlnError::LightningUnsupportedOnMainnet(_)));
+        let expected = "RLN on mainnet currently supports only on-chain methods. Lightning APIs are not supported.";
+        assert_eq!(err.to_string(), expected);
+        assert_eq!(
+            super::super::state::take_last_api_error_detail().as_deref(),
+            Some(expected)
+        );
+        assert!(super::super::state::take_last_api_error_detail().is_none());
     }
 
     #[test]

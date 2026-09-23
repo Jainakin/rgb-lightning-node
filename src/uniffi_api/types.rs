@@ -56,6 +56,8 @@ pub enum RlnError {
     FailedVssInit(String),
     #[error("{0}")]
     Internal(String),
+    #[error("{0}")]
+    LightningUnsupportedOnMainnet(String),
 }
 
 impl RlnError {

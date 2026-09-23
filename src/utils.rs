@@ -95,6 +95,16 @@ pub(crate) struct AppState {
 }
 
 impl AppState {
+    /// Gate Lightning API calls using the configured node network, including while locked.
+    /// Kept separate from wallet/lifecycle checks so on-chain and administrative APIs retain
+    /// their existing requirements. REST and SDK entry points share this policy.
+    pub(crate) fn check_lightning_supported(&self) -> Result<(), APIError> {
+        if self.static_state.network == BitcoinNetwork::Mainnet {
+            return Err(APIError::LightningUnsupportedOnMainnet);
+        }
+        Ok(())
+    }
+
     pub(crate) fn db(&self) -> Arc<DatabaseConnection> {
         self.static_state.db()
     }

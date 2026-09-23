@@ -3146,6 +3146,7 @@ impl RlnWasmWallet {
         // taproot channels), so this conversion is lossless for everything LDK
         // emits in `FundingGenerationReady`.
         let bitcoin_network = self.wallet_ref()?.get_wallet_data().bitcoin_network;
+        crate::check_lightning_supported(crate::ln_node::rgb_network_label(bitcoin_network))?;
         let network = match bitcoin_network {
             rgb_lib_wasm::BitcoinNetwork::Mainnet => lightning::bitcoin::Network::Bitcoin,
             rgb_lib_wasm::BitcoinNetwork::Testnet => lightning::bitcoin::Network::Testnet,

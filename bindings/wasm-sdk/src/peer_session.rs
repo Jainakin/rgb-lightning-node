@@ -120,14 +120,38 @@ pub struct RlnLdkPeerManagerHooks {
     pub report_error: Rc<dyn Fn(&str) -> Result<(), JsValue>>,
 }
 
+struct RegisteredPeerManagerHooks {
+    hooks: RlnLdkPeerManagerHooks,
+    check_lightning_supported: Option<Rc<dyn Fn() -> Result<(), JsValue>>>,
+}
+
+impl RegisteredPeerManagerHooks {
+    fn check_lightning_supported(&self) -> Result<(), JsValue> {
+        if let Some(check) = &self.check_lightning_supported {
+            check()?;
+        }
+        Ok(())
+    }
+}
+
 thread_local! {
-    static RLN_LDK_PEER_MANAGER_HOOKS: RefCell<Option<Rc<RlnLdkPeerManagerHooks>>> = RefCell::new(None);
+    static RLN_LDK_PEER_MANAGER_HOOKS: RefCell<Option<Rc<RegisteredPeerManagerHooks>>> = RefCell::new(None);
     static RLN_LDK_PEER_MANAGER_HOOKS_V2_READY: Cell<bool> = const { Cell::new(false) };
 }
 
 pub fn install_rln_ldk_peer_manager_hooks(hooks: RlnLdkPeerManagerHooks) {
+    install_rln_ldk_peer_manager_hooks_with_guard(hooks, None);
+}
+
+pub(crate) fn install_rln_ldk_peer_manager_hooks_with_guard(
+    hooks: RlnLdkPeerManagerHooks,
+    check_lightning_supported: Option<Rc<dyn Fn() -> Result<(), JsValue>>>,
+) {
     RLN_LDK_PEER_MANAGER_HOOKS.with(|slot| {
-        slot.replace(Some(Rc::new(hooks)));
+        slot.replace(Some(Rc::new(RegisteredPeerManagerHooks {
+            hooks,
+            check_lightning_supported,
+        })));
     });
     RLN_LDK_PEER_MANAGER_HOOKS_V2_READY.with(|ready| ready.set(true));
 }
@@ -139,7 +163,7 @@ pub fn clear_rln_ldk_peer_manager_hooks() {
     RLN_LDK_PEER_MANAGER_HOOKS_V2_READY.with(|ready| ready.set(false));
 }
 
-fn get_rln_ldk_peer_manager_hooks() -> Option<Rc<RlnLdkPeerManagerHooks>> {
+fn get_rln_ldk_peer_manager_hooks() -> Option<Rc<RegisteredPeerManagerHooks>> {
     RLN_LDK_PEER_MANAGER_HOOKS.with(|slot| slot.borrow().as_ref().cloned())
 }
 
@@ -295,34 +319,46 @@ impl PeerManagerAdapter for RustPeerManagerAdapter {
 }
 
 fn callbacks_from_hooks(
-    hooks: Rc<RlnLdkPeerManagerHooks>,
+    hooks: Rc<RegisteredPeerManagerHooks>,
     peer_pubkey: String,
 ) -> RustPeerManagerCallbacks {
     RustPeerManagerCallbacks {
         new_outbound_connection: Box::new({
             let hooks = hooks.clone();
-            move |peer_pubkey| (hooks.new_outbound_connection)(peer_pubkey)
+            move |peer_pubkey| {
+                hooks.check_lightning_supported()?;
+                (hooks.hooks.new_outbound_connection)(peer_pubkey)
+            }
         }),
         read_event: Box::new({
             let hooks = hooks.clone();
             let peer_pubkey = peer_pubkey.clone();
-            move |payload_hex| (hooks.read_event)(&peer_pubkey, payload_hex)
+            move |payload_hex| {
+                hooks.check_lightning_supported()?;
+                (hooks.hooks.read_event)(&peer_pubkey, payload_hex)
+            }
         }),
         process_events: Box::new({
             let hooks = hooks.clone();
-            move || (hooks.process_events)()
+            move || {
+                hooks.check_lightning_supported()?;
+                (hooks.hooks.process_events)()
+            }
         }),
         socket_disconnected: Box::new({
             let hooks = hooks.clone();
             let peer_pubkey = peer_pubkey.clone();
-            move || (hooks.socket_disconnected)(&peer_pubkey)
+            move || (hooks.hooks.socket_disconnected)(&peer_pubkey)
         }),
         take_outbound_frames: Box::new({
             let hooks = hooks.clone();
             let peer_pubkey = peer_pubkey.clone();
-            move || (hooks.take_outbound_frames)(&peer_pubkey)
+            move || {
+                hooks.check_lightning_supported()?;
+                (hooks.hooks.take_outbound_frames)(&peer_pubkey)
+            }
         }),
-        report_error: Box::new(move |error_message| (hooks.report_error)(error_message)),
+        report_error: Box::new(move |error_message| (hooks.hooks.report_error)(error_message)),
     }
 }
 
@@ -898,6 +934,8 @@ impl RlnWasmRustPeerManagerBridge {
         peer_pubkey: String,
     ) -> Result<RlnWasmPeerSession, JsValue> {
         if let Some(hooks) = get_rln_ldk_peer_manager_hooks() {
+            // Check the configured node before even opening the transport socket.
+            hooks.check_lightning_supported()?;
             let callbacks = callbacks_from_hooks(hooks, peer_pubkey.clone());
             return peer_session_connect_rust_callbacks(
                 proxy_url,
@@ -964,6 +1002,8 @@ impl RlnWasmRustPeerManagerBridge {
         options_js: JsValue,
     ) -> Result<RlnWasmPeerSession, JsValue> {
         if let Some(hooks) = get_rln_ldk_peer_manager_hooks() {
+            // Check the configured node before even opening the transport socket.
+            hooks.check_lightning_supported()?;
             let callbacks = callbacks_from_hooks(hooks, peer_pubkey.clone());
             return peer_session_connect_with_adapter_rust_callbacks(
                 proxy_url,

@@ -4,6 +4,17 @@ info:
   description: |-
     This is the OpenAPI specification for the
     [RGB Lightning Node](https://github.com/RGB-Tools/rgb-lightning-node) APIs.
+
+    On mainnet, Lightning APIs return HTTP 403 with name
+    LightningUnsupportedOnMainnet and the message: "RLN on mainnet currently
+    supports only on-chain methods. Lightning APIs are not supported."
+    This includes channel/peer operations, Lightning invoices and decoding,
+    payments, async payments, swaps and swap-string decoding, and onion messages.
+    The configured node network controls the restriction, including while locked.
+    Authentication and request extraction still apply before handler execution.
+    Bitcoin/RGB on-chain APIs (including RGB invoices, transfers and asset linking)
+    and shared administration/identity APIs retain their existing requirements.
+    Lightning APIs on supported non-mainnet networks are unchanged.
   license:
     name: MIT
     url: https://mit-license.org/
@@ -57,6 +68,8 @@ paths:
             schema:
               $ref: '#/components/schemas/AsyncOrderNewRequest'
       responses:
+        '403':
+          $ref: '#/components/responses/LightningUnsupportedOnMainnet'
         '200':
           description: Host accepted the async order request and returned order state
           content:
@@ -75,6 +88,8 @@ paths:
             schema:
               $ref: '#/components/schemas/AsyncOrderOutboundInvoiceRequest'
       responses:
+        '403':
+          $ref: '#/components/responses/LightningUnsupportedOnMainnet'
         '200':
           description: Recipient peer returned an outbound invoice
           content:
@@ -183,6 +198,8 @@ paths:
             schema:
               $ref: '#/components/schemas/InvoiceCancelRequest'
       responses:
+        '403':
+          $ref: '#/components/responses/LightningUnsupportedOnMainnet'
         '200':
           description: Successful operation
           content:
@@ -255,6 +272,8 @@ paths:
             schema:
               $ref: '#/components/schemas/ClaimHodlInvoiceRequest'
       responses:
+        '403':
+          $ref: '#/components/responses/LightningUnsupportedOnMainnet'
         '200':
           description: Successful operation
           content:
@@ -273,6 +292,8 @@ paths:
             schema:
               $ref: '#/components/schemas/CloseChannelRequest'
       responses:
+        '403':
+          $ref: '#/components/responses/LightningUnsupportedOnMainnet'
         '200':
           description: Successful operation
           content:
@@ -291,6 +312,8 @@ paths:
             schema:
               $ref: '#/components/schemas/ConnectPeerRequest'
       responses:
+        '403':
+          $ref: '#/components/responses/LightningUnsupportedOnMainnet'
         '200':
           description: Successful operation
           content:
@@ -327,6 +350,8 @@ paths:
             schema:
               $ref: '#/components/schemas/DecodeLNInvoiceRequest'
       responses:
+        '403':
+          $ref: '#/components/responses/LightningUnsupportedOnMainnet'
         '200':
           description: Successful operation
           content:
@@ -363,6 +388,8 @@ paths:
             schema:
               $ref: '#/components/schemas/DecodeSwapstringRequest'
       responses:
+        '403':
+          $ref: '#/components/responses/LightningUnsupportedOnMainnet'
         '200':
           description: Successful operation
           content:
@@ -381,6 +408,8 @@ paths:
             schema:
               $ref: '#/components/schemas/DisconnectPeerRequest'
       responses:
+        '403':
+          $ref: '#/components/responses/LightningUnsupportedOnMainnet'
         '200':
           description: Successful operation
           content:
@@ -454,6 +483,8 @@ paths:
             schema:
               $ref: '#/components/schemas/GetChannelIdRequest'
       responses:
+        '403':
+          $ref: '#/components/responses/LightningUnsupportedOnMainnet'
         '200':
           description: Successful operation
           content:
@@ -493,6 +524,8 @@ paths:
             schema:
               $ref: '#/components/schemas/GetPaymentRequest'
       responses:
+        '403':
+          $ref: '#/components/responses/LightningUnsupportedOnMainnet'
         '200':
           description: Successful operation
           content:
@@ -511,6 +544,8 @@ paths:
             schema:
               $ref: '#/components/schemas/GetSwapRequest'
       responses:
+        '403':
+          $ref: '#/components/responses/LightningUnsupportedOnMainnet'
         '200':
           description: Successful operation
           content:
@@ -567,6 +602,8 @@ paths:
             schema:
               $ref: '#/components/schemas/InvoiceStatusRequest'
       responses:
+        '403':
+          $ref: '#/components/responses/LightningUnsupportedOnMainnet'
         '200':
           description: Successful operation
           content:
@@ -657,6 +694,8 @@ paths:
             schema:
               $ref: '#/components/schemas/KeysendRequest'
       responses:
+        '403':
+          $ref: '#/components/responses/LightningUnsupportedOnMainnet'
         '200':
           description: Successful operation
           content:
@@ -688,6 +727,8 @@ paths:
       summary: List channels
       description: List the node's LN channels
       responses:
+        '403':
+          $ref: '#/components/responses/LightningUnsupportedOnMainnet'
         '200':
           description: Successful operation
           content:
@@ -765,6 +806,8 @@ paths:
             Return only payments created at or before this Unix timestamp
             (seconds).
       responses:
+        '403':
+          $ref: '#/components/responses/LightningUnsupportedOnMainnet'
         '200':
           description: Successful operation
           content:
@@ -778,6 +821,8 @@ paths:
       summary: List peers
       description: List the node's LN peers
       responses:
+        '403':
+          $ref: '#/components/responses/LightningUnsupportedOnMainnet'
         '200':
           description: Successful operation
           content:
@@ -791,6 +836,8 @@ paths:
       summary: List swaps
       description: List the node's swaps
       responses:
+        '403':
+          $ref: '#/components/responses/LightningUnsupportedOnMainnet'
         '200':
           description: Successful operation
           content:
@@ -890,6 +937,8 @@ paths:
             schema:
               $ref: '#/components/schemas/LNInvoiceRequest'
       responses:
+        '403':
+          $ref: '#/components/responses/LightningUnsupportedOnMainnet'
         '200':
           description: Successful operation
           content:
@@ -908,6 +957,8 @@ paths:
             schema:
               $ref: '#/components/schemas/MakerExecuteRequest'
       responses:
+        '403':
+          $ref: '#/components/responses/LightningUnsupportedOnMainnet'
         '200':
           description: Successful operation
           content:
@@ -926,6 +977,8 @@ paths:
             schema:
               $ref: '#/components/schemas/MakerInitRequest'
       responses:
+        '403':
+          $ref: '#/components/responses/LightningUnsupportedOnMainnet'
         '200':
           description: Successful operation
           content:
@@ -971,6 +1024,8 @@ paths:
             schema:
               $ref: '#/components/schemas/OpenChannelRequest'
       responses:
+        '403':
+          $ref: '#/components/responses/LightningUnsupportedOnMainnet'
         '200':
           description: Successful operation
           content:
@@ -1148,6 +1203,8 @@ paths:
             schema:
               $ref: '#/components/schemas/SendOnionMessageRequest'
       responses:
+        '403':
+          $ref: '#/components/responses/LightningUnsupportedOnMainnet'
         '200':
           description: Successful operation
           content:
@@ -1166,6 +1223,8 @@ paths:
             schema:
               $ref: '#/components/schemas/SendPaymentRequest'
       responses:
+        '403':
+          $ref: '#/components/responses/LightningUnsupportedOnMainnet'
         '200':
           description: Successful operation
           content:
@@ -1251,6 +1310,8 @@ paths:
             schema:
               $ref: '#/components/schemas/TakerRequest'
       responses:
+        '403':
+          $ref: '#/components/responses/LightningUnsupportedOnMainnet'
         '200':
           description: Successful operation
           content:
@@ -1388,6 +1449,25 @@ paths:
         '503':
           description: VSS is not configured or unreachable
 components:
+  responses:
+    LightningUnsupportedOnMainnet:
+      description: Lightning APIs are unavailable on a node configured for mainnet.
+      content:
+        application/json:
+          schema:
+            type: object
+            required: [name, code, error]
+            properties:
+              name:
+                type: string
+              code:
+                type: integer
+              error:
+                type: string
+          example:
+            name: LightningUnsupportedOnMainnet
+            code: 403
+            error: RLN on mainnet currently supports only on-chain methods. Lightning APIs are not supported.
   schemas:
     AddressResponse:
       type: object

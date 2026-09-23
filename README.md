@@ -17,6 +17,23 @@ More context on how RGB works on the Lightning Network can be found
 The node supports the regtest, signet, testnet3, testnet4 and mainnet networks,
 selected at startup via the `--network` flag (accepted values: `regtest`,
 `signet`, `signetcustom`, `testnet`/`testnet3`, `testnet4`, `mainnet`/`bitcoin`).
+On mainnet, Lightning APIs return `LightningUnsupportedOnMainnet`:
+
+> RLN on mainnet currently supports only on-chain methods. Lightning APIs are not supported.
+
+This applies to channel and peer operations, Lightning invoices (including decoding and
+HODL invoices), payments, async payments, swaps (including swap-string decoding), and
+onion messages. REST returns HTTP 403 with the usual `name`, `code`, and `error` fields;
+native SDK/bindings return the corresponding typed error. The configured node network
+controls this restriction, even while the node is locked. REST authentication and request
+extraction still apply first; SDK argument conversion still applies before SDK execution.
+
+Bitcoin/RGB on-chain APIs, including RGB invoices, transfers and asset linking, remain
+available under their existing requirements. Shared administration, node/network info,
+and node-identity message signing/verification retain their existing behavior.
+Lightning APIs on supported non-mainnet networks are unchanged. Startup, background
+services, and wallet/signing policies are unchanged.
+
 Please be careful, this software is early alpha, we do not take any
 responsibility for loss of funds or any other issue you may encounter.
 

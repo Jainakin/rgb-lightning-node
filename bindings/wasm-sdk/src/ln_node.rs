@@ -34,7 +34,7 @@ use crate::ln_runtime_native::{NativeLnRuntimeCore, NativeLnRuntimeCoreStatusDat
 use crate::ln_transport::RlnWasmLnSocketConnectOptionsData;
 use crate::peer_session::{
     clear_rln_ldk_peer_manager_hooks, has_peer_manager_hooks, has_peer_manager_hooks_v2,
-    install_rln_ldk_peer_manager_hooks, RlnLdkPeerManagerHooks, RlnWasmPeerSession,
+    install_rln_ldk_peer_manager_hooks_with_guard, RlnLdkPeerManagerHooks, RlnWasmPeerSession,
     RlnWasmRustPeerManagerBridge,
 };
 use crate::runtime_store::{browser_persistent_state_store, RuntimeStateStore};
@@ -393,6 +393,9 @@ pub struct RlnWasmNode {
     node_instance_nonce: u64,
     next_runtime_event_seq: Rc<RefCell<u64>>,
     network: RefCell<String>,
+    /// Authoritative configured/adopted network for API policy. Keep this separate from mutable
+    /// chain-sync diagnostics, and readable while an async on-chain operation borrows the wallet.
+    configured_network: Rc<RefCell<String>>,
     /// Whether the network was explicitly selected at construction (native-style `--network`).
     /// When `true`, `attach_wallet_shared` validates the wallet's network against it and errors on
     /// mismatch. When `false` (bare `new`/facade path), the node adopts the attached wallet's network.
@@ -414,6 +417,10 @@ impl RlnWasmNode {
             *seq = seq.saturating_add(1);
             *seq
         })
+    }
+
+    fn check_lightning_supported(&self) -> Result<(), JsValue> {
+        crate::check_lightning_supported(&self.configured_network.borrow())
     }
 
     fn ensure_runtime_ready(&self) -> Result<(), JsValue> {
@@ -571,6 +578,7 @@ impl RlnWasmNode {
             next_payment_seq: RefCell::new(0),
             node_instance_nonce: Self::next_node_instance_nonce(),
             next_runtime_event_seq: Rc::new(RefCell::new(next_runtime_event_seq)),
+            configured_network: Rc::new(RefCell::new(restored_network.clone())),
             network: RefCell::new(restored_network),
             network_configured: Cell::new(configured_rgb_network.is_some()),
             wallet: RefCell::new(None),
@@ -650,6 +658,7 @@ impl RlnWasmNode {
             }
         } else {
             *self.network.borrow_mut() = wallet_label.to_string();
+            *self.configured_network.borrow_mut() = wallet_label.to_string();
             let _ = self.chain_sync.set_network(wallet_label);
         }
         crate::ldk_live_backend::set_network_for_runtime(
@@ -877,6 +886,7 @@ impl RlnWasmNode {
         peer_addr: String,
         peer_pubkey: String,
     ) -> Result<(), JsValue> {
+        self.check_lightning_supported()?;
         self.ensure_runtime_ready()?;
         self.ensure_stable_identity_for_channel_operations()?;
         let peer_pubkey = peer_pubkey.trim().to_string();
@@ -1047,6 +1057,7 @@ impl RlnWasmNode {
 
     #[wasm_bindgen(js_name = disconnectPeer)]
     pub async fn disconnect_peer(&self, peer_pubkey: String) -> Result<(), JsValue> {
+        self.check_lightning_supported()?;
         self.ensure_runtime_ready()?;
         let peer_pubkey = peer_pubkey.trim().to_string();
         if peer_pubkey.trim().is_empty() {
@@ -1087,6 +1098,7 @@ impl RlnWasmNode {
 
     #[wasm_bindgen(js_name = reconnectPersistedPeersValue)]
     pub async fn reconnect_persisted_peers_value(&self) -> Result<JsValue, JsValue> {
+        self.check_lightning_supported()?;
         self.ensure_runtime_ready()?;
         let snapshot =
             load_runtime_peer_session_snapshot(&self.persistence_keys.peer_sessions_storage_key)
@@ -1127,6 +1139,7 @@ impl RlnWasmNode {
 
     #[wasm_bindgen(js_name = reconnectManagerStartValue)]
     pub fn reconnect_manager_start_value(&self) -> Result<JsValue, JsValue> {
+        self.check_lightning_supported()?;
         if *self.reconnect_manager_running.borrow() {
             return self.reconnect_manager_status_value();
         }
@@ -1225,6 +1238,7 @@ impl RlnWasmNode {
     /// while already running just returns the current status.
     #[wasm_bindgen(js_name = autoDriveStartValue)]
     pub fn auto_drive_start_value(&self, interval_ms: u32) -> Result<JsValue, JsValue> {
+        self.check_lightning_supported()?;
         self.ensure_runtime_ready()?;
         if *self.auto_drive_running.borrow() {
             return self.auto_drive_status_value();
@@ -1349,6 +1363,7 @@ impl RlnWasmNode {
 
     #[wasm_bindgen(js_name = listPeersValue)]
     pub fn list_peers_value(&self) -> Result<JsValue, JsValue> {
+        self.check_lightning_supported()?;
         self.ensure_runtime_ready()?;
         let mut data = if self.use_runtime_state_for_ln_views() {
             self.ldk_runtime
@@ -1384,6 +1399,7 @@ impl RlnWasmNode {
 
     #[wasm_bindgen(js_name = listChannelsValue)]
     pub fn list_channels_value(&self) -> Result<JsValue, JsValue> {
+        self.check_lightning_supported()?;
         self.ensure_runtime_ready()?;
         let mut data = if self.use_runtime_state_for_ln_views() {
             let mut runtime = self
@@ -1553,6 +1569,7 @@ impl RlnWasmNode {
 
     #[wasm_bindgen(js_name = chainSyncTickValue)]
     pub async fn chain_sync_tick_value(&self) -> Result<JsValue, JsValue> {
+        self.check_lightning_supported()?;
         self.ensure_runtime_ready()?;
         // One full drive pass (chain sync → live LDK → event draining → authoritative reconcile).
         // The autonomous loop (`autoDriveStart`) runs the exact same `node_drive_tick_once`, so a
@@ -1628,6 +1645,7 @@ impl RlnWasmNode {
 
     #[wasm_bindgen(js_name = listPendingFundingRequestsValue)]
     pub fn list_pending_funding_requests_value(&self) -> Result<JsValue, JsValue> {
+        self.check_lightning_supported()?;
         self.ensure_runtime_ready()?;
         crate::js_obj(&self.ldk_runtime.list_pending_funding_requests()?)
     }
@@ -1644,6 +1662,7 @@ impl RlnWasmNode {
         &self,
         submission_js: JsValue,
     ) -> Result<JsValue, JsValue> {
+        self.check_lightning_supported()?;
         self.ensure_runtime_ready()?;
         let submission: WasmFundingTxSubmissionRequest =
             serde_wasm_bindgen::from_value(submission_js)
@@ -1712,6 +1731,7 @@ impl RlnWasmNode {
 
     #[wasm_bindgen(js_name = closeAllPeers)]
     pub async fn close_all_peers(&self) -> Result<(), JsValue> {
+        self.check_lightning_supported()?;
         self.ensure_runtime_ready()?;
         let peer_pubkeys: Vec<String> = if self.use_runtime_state_for_ln_views() {
             self.ldk_runtime
@@ -1745,6 +1765,7 @@ impl RlnWasmNode {
 
     #[wasm_bindgen(js_name = drainNativeRuntimeQueueValue)]
     pub fn drain_native_runtime_queue_value(&self) -> Result<JsValue, JsValue> {
+        self.check_lightning_supported()?;
         self.ensure_runtime_ready()?;
         let drained = self.runtime_core.drain_events();
         crate::js_obj(&drained)
@@ -1759,6 +1780,7 @@ impl RlnWasmNode {
 
     #[wasm_bindgen(js_name = processNativeRuntimeQueueValue)]
     pub fn process_native_runtime_queue_value(&self) -> Result<JsValue, JsValue> {
+        self.check_lightning_supported()?;
         self.ensure_runtime_ready()?;
         let drained = self.runtime_core.drain_events();
         for queued in drained.iter() {
@@ -1798,7 +1820,10 @@ impl RlnWasmNode {
         let runtime_event_store_key = self.persistence_keys.runtime_events_storage_key.clone();
         let ldk_runtime = self.ldk_runtime.clone();
         let use_runtime_state_for_ln_views = self.use_runtime_state_for_ln_views();
-        install_rln_ldk_peer_manager_hooks(RlnLdkPeerManagerHooks {
+        let configured_network = Rc::clone(&self.configured_network);
+        let check_lightning_supported =
+            Rc::new(move || crate::check_lightning_supported(&configured_network.borrow()));
+        let hooks = RlnLdkPeerManagerHooks {
             new_outbound_connection: Rc::new({
                 let ldk_runtime = ldk_runtime.clone();
                 move |peer_pubkey| ldk_runtime.peer_new_outbound_connection(peer_pubkey)
@@ -1867,7 +1892,8 @@ impl RlnWasmNode {
                     Ok(())
                 }
             }),
-        });
+        };
+        install_rln_ldk_peer_manager_hooks_with_guard(hooks, Some(check_lightning_supported));
     }
 
     #[wasm_bindgen(js_name = clearAutoPeerManagerHooks)]
@@ -1891,6 +1917,7 @@ impl RlnWasmNode {
 
     #[wasm_bindgen(js_name = failPendingPayments)]
     pub fn fail_pending_payments_api(&self) -> Result<JsValue, JsValue> {
+        self.check_lightning_supported()?;
         self.ensure_runtime_ready()?;
         ensure_manual_status_update_allowed(self.use_runtime_state_for_ln_views())?;
         if self.use_runtime_state_for_ln_views() {
@@ -1929,6 +1956,7 @@ impl RlnWasmNode {
         asset_id: Option<String>,
         asset_amount: Option<u64>,
     ) -> Result<JsValue, JsValue> {
+        self.check_lightning_supported()?;
         self.ensure_runtime_ready()?;
         let invoice = invoice.trim().to_string();
         if invoice.is_empty() {
@@ -2097,6 +2125,7 @@ impl RlnWasmNode {
         asset_id: Option<String>,
         asset_amount: Option<u64>,
     ) -> Result<JsValue, JsValue> {
+        self.check_lightning_supported()?;
         self.ensure_runtime_ready()?;
         let dest_pubkey = dest_pubkey.trim().to_string();
         if dest_pubkey.trim().is_empty() {
@@ -2235,6 +2264,7 @@ impl RlnWasmNode {
         asset_id: Option<String>,
         asset_amount: Option<u64>,
     ) -> Result<JsValue, JsValue> {
+        self.check_lightning_supported()?;
         self.ensure_runtime_ready()?;
         let dest_pubkey = dest_pubkey.trim().to_string();
         if dest_pubkey.is_empty() {
@@ -2287,6 +2317,7 @@ impl RlnWasmNode {
         asset_id: Option<String>,
         asset_amount: Option<u64>,
     ) -> Result<JsValue, JsValue> {
+        self.check_lightning_supported()?;
         self.ensure_runtime_ready()?;
         let invoice = invoice.trim().to_string();
         if invoice.is_empty() {
@@ -2334,6 +2365,7 @@ impl RlnWasmNode {
     /// Status of a single REAL payment by hex payment hash (from the live event stream), or null.
     #[wasm_bindgen(js_name = livePaymentValue)]
     pub fn live_payment_value(&self, payment_hash: String) -> Result<JsValue, JsValue> {
+        self.check_lightning_supported()?;
         self.ensure_runtime_ready()?;
         match self.ldk_runtime.live_payment(payment_hash.trim()) {
             Some(record) => crate::js_obj(&record),
@@ -2344,6 +2376,7 @@ impl RlnWasmNode {
     /// Snapshot of all REAL payments tracked from the live `ChannelManager` event stream.
     #[wasm_bindgen(js_name = livePaymentsValue)]
     pub fn live_payments_value(&self) -> Result<JsValue, JsValue> {
+        self.check_lightning_supported()?;
         self.ensure_runtime_ready()?;
         let data = self.ldk_runtime.live_payments();
         crate::js_obj(&data)
@@ -2351,6 +2384,7 @@ impl RlnWasmNode {
 
     #[wasm_bindgen(js_name = listPaymentsValue)]
     pub fn list_payments_value(&self) -> Result<JsValue, JsValue> {
+        self.check_lightning_supported()?;
         self.ensure_runtime_ready()?;
         let mut data = if self.use_runtime_state_for_ln_views() {
             self.ldk_runtime
@@ -2382,6 +2416,7 @@ impl RlnWasmNode {
 
     #[wasm_bindgen(js_name = listRgbLnTransfersValue)]
     pub fn list_rgb_ln_transfers_value(&self) -> Result<JsValue, JsValue> {
+        self.check_lightning_supported()?;
         self.ensure_runtime_ready()?;
         let mut data = self
             .rgb_ln_transfers
@@ -2406,6 +2441,7 @@ impl RlnWasmNode {
 
     #[wasm_bindgen(js_name = getPaymentValue)]
     pub fn get_payment_value(&self, payment_hash: String) -> Result<JsValue, JsValue> {
+        self.check_lightning_supported()?;
         self.ensure_runtime_ready()?;
         let payment_hash = payment_hash.trim().to_string();
         if payment_hash.is_empty() {
@@ -2439,6 +2475,7 @@ impl RlnWasmNode {
         payment_hash: String,
         status: String,
     ) -> Result<JsValue, JsValue> {
+        self.check_lightning_supported()?;
         self.ensure_runtime_ready()?;
         ensure_manual_status_update_allowed(self.use_runtime_state_for_ln_views())?;
         let payment_hash = payment_hash.trim().to_string();
@@ -2465,6 +2502,7 @@ impl RlnWasmNode {
 
     #[wasm_bindgen(js_name = decodeLnInvoiceValue)]
     pub fn decode_ln_invoice_value(&self, invoice: String) -> Result<JsValue, JsValue> {
+        self.check_lightning_supported()?;
         let invoice = invoice.trim();
         if invoice.is_empty() {
             return Err(JsValue::from_str(sdk_contracts::ERR_INVOICE_EMPTY));
@@ -2519,6 +2557,7 @@ impl RlnWasmNode {
         payment_hash_override: Option<String>,
         invoice_type: &str,
     ) -> Result<JsValue, JsValue> {
+        self.check_lightning_supported()?;
         self.ensure_runtime_ready()?;
         if expiry_sec == 0 {
             return Err(JsValue::from_str(sdk_contracts::ERR_EXPIRY_SEC_NONPOSITIVE));
@@ -2689,6 +2728,7 @@ impl RlnWasmNode {
         asset_id: Option<String>,
         asset_amount: Option<u64>,
     ) -> Result<JsValue, JsValue> {
+        self.check_lightning_supported()?;
         self.ensure_runtime_ready()?;
         if expiry_sec == 0 {
             return Err(JsValue::from_str(sdk_contracts::ERR_EXPIRY_SEC_NONPOSITIVE));
@@ -2739,6 +2779,7 @@ impl RlnWasmNode {
         asset_amount: Option<u64>,
         payment_hash: String,
     ) -> Result<JsValue, JsValue> {
+        self.check_lightning_supported()?;
         if self.use_runtime_state_for_ln_views() {
             self.ensure_runtime_ready()?;
             if expiry_sec == 0 {
@@ -2806,6 +2847,7 @@ impl RlnWasmNode {
 
     #[wasm_bindgen(js_name = cancelHodlInvoiceValue)]
     pub fn cancel_hodl_invoice_value(&self, payment_hash: String) -> Result<JsValue, JsValue> {
+        self.check_lightning_supported()?;
         self.ensure_runtime_ready()?;
         let payment_hash = payment_hash.trim().to_string();
         if payment_hash.is_empty() {
@@ -2873,6 +2915,7 @@ impl RlnWasmNode {
         payment_hash: String,
         payment_preimage: String,
     ) -> Result<JsValue, JsValue> {
+        self.check_lightning_supported()?;
         self.ensure_runtime_ready()?;
         let payment_hash = payment_hash.trim().to_string();
         if payment_hash.is_empty() {
@@ -2966,6 +3009,7 @@ impl RlnWasmNode {
 
     #[wasm_bindgen(js_name = invoiceStatusValue)]
     pub fn invoice_status_value(&self, invoice: String) -> Result<JsValue, JsValue> {
+        self.check_lightning_supported()?;
         self.ensure_runtime_ready()?;
         let invoice = invoice.trim();
         if invoice.is_empty() {
@@ -3023,6 +3067,7 @@ impl RlnWasmNode {
         invoice: String,
         status: String,
     ) -> Result<JsValue, JsValue> {
+        self.check_lightning_supported()?;
         self.ensure_runtime_ready()?;
         ensure_manual_status_update_allowed(self.use_runtime_state_for_ln_views())?;
         let invoice = invoice.trim();
@@ -3048,6 +3093,7 @@ impl RlnWasmNode {
 
     #[wasm_bindgen(js_name = ingestReadEventPayloadHex)]
     pub fn ingest_read_event_payload_hex(&self, payload_hex: String) -> Result<JsValue, JsValue> {
+        self.check_lightning_supported()?;
         self.ensure_runtime_ready()?;
         ensure_manual_event_ingestion_allowed(self.use_runtime_state_for_ln_views())?;
         if self.use_runtime_state_for_ln_views() {
@@ -3113,6 +3159,7 @@ impl RlnWasmNode {
         &self,
         payload_hex: String,
     ) -> Result<JsValue, JsValue> {
+        self.check_lightning_supported()?;
         self.ensure_runtime_ready()?;
         ensure_manual_event_ingestion_allowed(self.use_runtime_state_for_ln_views())?;
         let result = self.apply_and_record_transport_event_from_payload_hex(
@@ -3166,6 +3213,7 @@ impl RlnWasmNode {
         contract_id: Option<String>,
         consignment_endpoint: Option<String>,
     ) -> Result<JsValue, JsValue> {
+        self.check_lightning_supported()?;
         self.ensure_runtime_ready()?;
         self.ensure_stable_identity_for_channel_operations()?;
         let peer_pubkey = peer_pubkey.trim().to_string();
@@ -3500,11 +3548,13 @@ impl RlnWasmNode {
 
     #[wasm_bindgen(js_name = driveRgbFundingWork)]
     pub async fn drive_rgb_funding_work(&self) -> Result<(), JsValue> {
+        self.check_lightning_supported()?;
         self.ldk_runtime.drive_rgb_funding_work_boxed().await
     }
 
     #[wasm_bindgen(js_name = processPendingRgbTransactions)]
     pub async fn process_pending_rgb_transactions(&self) -> Result<(), JsValue> {
+        self.check_lightning_supported()?;
         self.ldk_runtime
             .process_pending_rgb_transactions_boxed()
             .await
@@ -3515,6 +3565,7 @@ impl RlnWasmNode {
     /// SDK's `apay_new` / `/apay/new`.
     #[wasm_bindgen(js_name = apayNewValue)]
     pub async fn apay_new_value(&self, host_node_id: String) -> Result<JsValue, JsValue> {
+        self.check_lightning_supported()?;
         self.ensure_runtime_ready()?;
         let response = self
             .ldk_runtime
@@ -3539,6 +3590,7 @@ impl RlnWasmNode {
         username: String,
         domain: String,
     ) -> Result<JsValue, JsValue> {
+        self.check_lightning_supported()?;
         self.ensure_runtime_ready()?;
         let response = self
             .ldk_runtime
@@ -3573,6 +3625,7 @@ impl RlnWasmNode {
         peer_pubkey: Option<String>,
         force: bool,
     ) -> Result<(), JsValue> {
+        self.check_lightning_supported()?;
         self.ensure_runtime_ready()?;
         if channel_id.trim().is_empty() {
             return Err(JsValue::from_str(sdk_contracts::ERR_CHANNEL_ID_EMPTY));
@@ -3998,6 +4051,7 @@ impl RlnWasmNode {
 
     #[wasm_bindgen(js_name = getChannelId)]
     pub fn get_channel_id(&self, temporary_channel_id: String) -> Result<String, JsValue> {
+        self.check_lightning_supported()?;
         self.ensure_runtime_ready()?;
         if temporary_channel_id.trim().is_empty() {
             return Err(JsValue::from_str(
@@ -5513,7 +5567,7 @@ fn unix_now_secs() -> u64 {
 /// The node-level network string (as consumed by `invoice_currency` and the chain-sync driver)
 /// for a given rgb-lib WASM network. `SignetCustom` collapses to `"signet"`, matching the LDK
 /// network mapping in `ldk_live_backend::rgb_network_to_bitcoin_network`.
-fn rgb_network_label(network: rgb_lib_wasm::BitcoinNetwork) -> &'static str {
+pub(crate) fn rgb_network_label(network: rgb_lib_wasm::BitcoinNetwork) -> &'static str {
     match network {
         rgb_lib_wasm::BitcoinNetwork::Mainnet => "mainnet",
         rgb_lib_wasm::BitcoinNetwork::Testnet => "testnet",
@@ -6902,3 +6956,7 @@ fn parse_payment_status_event_json(value: &serde_json::Value) -> Option<PaymentS
         status: status.to_string(),
     })
 }
+
+#[cfg(all(test, target_arch = "wasm32"))]
+#[path = "tests/mainnet_lightning_tests.rs"]
+mod mainnet_lightning_tests;

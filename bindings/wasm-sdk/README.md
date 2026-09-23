@@ -16,6 +16,31 @@ See [ARCHITECTURE.md](ARCHITECTURE.md) for the consolidated WASM stack overview 
 
 For endpoint-level status, see [SDK_WASM_ENDPOINT_MATRIX.md](SDK_WASM_ENDPOINT_MATRIX.md).
 
+## Mainnet Lightning restriction
+
+A `RlnWasmNode` configured for mainnet rejects Lightning peer, channel, invoice,
+payment and async-payment operations, including channel funding and manual Lightning
+event processing (`chainSyncTick*` included), before starting those operations. The network comes from
+`newWithNodeRuntimeId(..., "mainnet")` or the wallet attached to a node without an
+explicit network. `RlnWasmSdk` and node-handle wrappers propagate the same error.
+The dedicated wallet `buildLightningFundingTx*` methods also reject mainnet. The
+peer-manager bridge checks the configured node's hooks before opening a socket;
+custom hooks without a configured node retain their existing behavior.
+
+The stable error string is:
+
+```text
+LightningUnsupportedOnMainnet: RLN on mainnet currently supports only on-chain methods. Lightning APIs are not supported.
+```
+
+On-chain wallet APIs, RGB on-chain invoice decoding, node/network information,
+identity signing, lifecycle, runtime status and persistence retain their existing
+requirements. Supported non-mainnet networks retain their existing behavior.
+
+The standalone SDK swap bookkeeping and onion-request validation helpers have no
+node/network association and do not execute node Lightning operations. They are
+separate from the configured-node APIs covered by this restriction.
+
 ## Build
 
 From repository root. The crate targets `wasm32` only and builds against the real

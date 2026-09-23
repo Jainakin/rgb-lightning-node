@@ -314,6 +314,9 @@ pub enum APIError {
     #[error("IO error: {0}")]
     IO(#[from] std::io::Error),
 
+    #[error("RLN on mainnet currently supports only on-chain methods. Lightning APIs are not supported.")]
+    LightningUnsupportedOnMainnet,
+
     #[error("Node is locked (hint: call unlock)")]
     LockedNode,
 
@@ -652,6 +655,7 @@ impl IntoResponse for APIError {
             | APIError::InvalidProxyProtocol(_)
             | APIError::InvoiceNotHodl
             | APIError::InvoiceSettlingInProgress
+            | APIError::LightningUnsupportedOnMainnet
             | APIError::LockedNode
             | APIError::MaxFeeExceeded(_)
             | APIError::MinFeeNotMet(_)
@@ -781,6 +785,24 @@ impl IntoResponse for AuthError {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn lightning_unsupported_on_mainnet_response_preserves_name_and_message() {
+        let response = APIError::LightningUnsupportedOnMainnet.into_response();
+        assert_eq!(response.status(), StatusCode::FORBIDDEN);
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let body: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(
+            body,
+            serde_json::json!({
+                "code": 403,
+                "name": "LightningUnsupportedOnMainnet",
+                "error": "RLN on mainnet currently supports only on-chain methods. Lightning APIs are not supported."
+            })
+        );
+    }
 
     #[test]
     fn unsupported_schema_maps_to_dedicated_error() {
