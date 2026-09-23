@@ -18,7 +18,8 @@ For endpoint-level status, see [SDK_WASM_ENDPOINT_MATRIX.md](SDK_WASM_ENDPOINT_M
 
 ## Mainnet Lightning restriction
 
-A `RlnWasmNode` configured for mainnet rejects Lightning peer, channel, invoice,
+A `RlnWasmNode` configured for mainnet rejects Lightning peer (including reconnect
+start/resume), channel, invoice,
 payment and async-payment operations, including channel funding and manual Lightning
 event processing (`chainSyncTick*` included), before starting those operations. The network comes from
 `newWithNodeRuntimeId(..., "mainnet")` or the wallet attached to a node without an

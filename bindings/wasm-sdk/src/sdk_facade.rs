@@ -1208,8 +1208,8 @@ impl RlnWasmSdk {
     }
 
     #[wasm_bindgen(js_name = reconnectManagerOnResume)]
-    pub fn reconnect_manager_on_resume(&self, node: &RlnWasmNode) {
-        node.reconnect_manager_on_resume();
+    pub fn reconnect_manager_on_resume(&self, node: &RlnWasmNode) -> Result<(), JsValue> {
+        node.reconnect_manager_on_resume()
     }
 
     #[wasm_bindgen(js_name = autoDriveStartValue)]
@@ -1889,8 +1889,8 @@ impl RlnWasmSdkNodeHandle {
     }
 
     #[wasm_bindgen(js_name = reconnectManagerOnResume)]
-    pub fn reconnect_manager_on_resume(&self) {
-        self.inner.reconnect_manager_on_resume();
+    pub fn reconnect_manager_on_resume(&self) -> Result<(), JsValue> {
+        self.inner.reconnect_manager_on_resume()
     }
 
     #[wasm_bindgen(js_name = listPeersValue)]

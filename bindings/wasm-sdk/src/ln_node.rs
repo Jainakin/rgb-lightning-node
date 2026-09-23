@@ -34,8 +34,7 @@ use crate::ln_runtime_native::{NativeLnRuntimeCore, NativeLnRuntimeCoreStatusDat
 use crate::ln_transport::RlnWasmLnSocketConnectOptionsData;
 use crate::peer_session::{
     clear_rln_ldk_peer_manager_hooks, has_peer_manager_hooks, has_peer_manager_hooks_v2,
-    install_rln_ldk_peer_manager_hooks_with_guard, RlnLdkPeerManagerHooks, RlnWasmPeerSession,
-    RlnWasmRustPeerManagerBridge,
+    RlnLdkPeerManagerHooks, RlnWasmPeerSession, RlnWasmRustPeerManagerBridge,
 };
 use crate::runtime_store::{browser_persistent_state_store, RuntimeStateStore};
 use crate::wasm_node_persistence::{JsonRuntimeStateStore, RuntimeScopeKeys};
@@ -1154,6 +1153,7 @@ impl RlnWasmNode {
         let ldk_runtime = Rc::clone(&self.ldk_runtime);
         let running = Rc::clone(&self.reconnect_manager_running);
         let backoff_ms = Rc::clone(&self.reconnect_manager_backoff_ms);
+        let bridge = self.bridge.clone();
 
         spawn_local(async move {
             let _ = reconnect_persisted_peers_once(
@@ -1163,6 +1163,7 @@ impl RlnWasmNode {
                 relay_session_auth.clone(),
                 &peers,
                 &ldk_runtime,
+                &bridge,
             )
             .await;
 
@@ -1179,6 +1180,7 @@ impl RlnWasmNode {
                     relay_session_auth.clone(),
                     &peers,
                     &ldk_runtime,
+                    &bridge,
                 )
                 .await;
                 if result.connected > 0 {
@@ -1334,9 +1336,10 @@ impl RlnWasmNode {
     }
 
     #[wasm_bindgen(js_name = reconnectManagerOnResume)]
-    pub fn reconnect_manager_on_resume(&self) {
+    pub fn reconnect_manager_on_resume(&self) -> Result<(), JsValue> {
+        self.check_lightning_supported()?;
         if !*self.reconnect_manager_running.borrow() {
-            return;
+            return Ok(());
         }
         let proxy_url = self.proxy_url.clone();
         let runtime_scope_key = self.persistence_keys.runtime_scope_key.clone();
@@ -1345,6 +1348,7 @@ impl RlnWasmNode {
         let peers = Rc::clone(&self.peers);
         let ldk_runtime = Rc::clone(&self.ldk_runtime);
         let backoff_ms = Rc::clone(&self.reconnect_manager_backoff_ms);
+        let bridge = self.bridge.clone();
         spawn_local(async move {
             let result = reconnect_persisted_peers_once(
                 &proxy_url,
@@ -1353,12 +1357,14 @@ impl RlnWasmNode {
                 relay_session_auth,
                 &peers,
                 &ldk_runtime,
+                &bridge,
             )
             .await;
             if result.connected > 0 {
                 *backoff_ms.borrow_mut() = RECONNECT_MANAGER_INITIAL_DELAY_MS;
             }
         });
+        Ok(())
     }
 
     #[wasm_bindgen(js_name = listPeersValue)]
@@ -1893,7 +1899,8 @@ impl RlnWasmNode {
                 }
             }),
         };
-        install_rln_ldk_peer_manager_hooks_with_guard(hooks, Some(check_lightning_supported));
+        self.bridge
+            .install_node_hooks(hooks, check_lightning_supported);
     }
 
     #[wasm_bindgen(js_name = clearAutoPeerManagerHooks)]
@@ -5852,6 +5859,7 @@ async fn reconnect_persisted_peers_once(
     relay_session_auth: Option<RlnWasmNodeRelaySessionAuthData>,
     peers: &Rc<RefCell<HashMap<String, PeerEntry>>>,
     ldk_runtime: &Rc<dyn LdkRuntimeManager>,
+    bridge: &RlnWasmRustPeerManagerBridge,
 ) -> RuntimeReconnectPeersResultData {
     let snapshot = load_runtime_peer_session_snapshot(peer_session_store_key).unwrap_or_default();
     let mut sessions = snapshot.sessions;
@@ -5874,17 +5882,6 @@ async fn reconnect_persisted_peers_once(
             connected = connected.saturating_add(1);
             continue;
         }
-        let bridge = match RlnWasmRustPeerManagerBridge::new(None) {
-            Ok(bridge) => bridge,
-            Err(err) => {
-                failed.push(format!(
-                    "{}: bridge init failed: {}",
-                    entry.session_key,
-                    err.as_string().unwrap_or_else(|| "unknown".to_string())
-                ));
-                continue;
-            }
-        };
         let session = if let Some(auth) = relay_session_auth.clone() {
             let options_js = match crate::js_obj(&RlnWasmLnSocketConnectOptionsData {
                 max_reconnect_attempts: Some(3),

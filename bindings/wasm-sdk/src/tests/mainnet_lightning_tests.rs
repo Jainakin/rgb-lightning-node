@@ -216,7 +216,7 @@ async fn mainnet_peer_bridge_rejects_before_opening_a_socket() {
             )
             .await,
     );
-    // Installing unrelated custom hooks must not retain a previously configured node's policy.
+    // Clearing the hooks removes the standalone bridge's configured-node registration.
     clear_rln_ldk_peer_manager_hooks();
     assert!(!has_peer_manager_hooks());
 }
@@ -239,4 +239,85 @@ async fn lightning_guard_does_not_borrow_busy_onchain_wallet() {
             .as_deref(),
         Some(sdk_contracts::ERR_INVOICE_EMPTY)
     );
+}
+
+#[wasm_bindgen_test]
+fn mainnet_reconnect_resume_rejects_through_node_and_wrappers() {
+    crate::test_utils::reset_wasm_runtime_state_for_tests();
+    let node = configured_node("mainnet");
+    let sdk = RlnWasmSdk::new();
+    assert_mainnet_rejection(node.reconnect_manager_on_resume());
+    assert_mainnet_rejection(sdk.reconnect_manager_on_resume(&node));
+    let handle = RlnWasmSdkNodeHandle { inner: node };
+    assert_mainnet_rejection(handle.reconnect_manager_on_resume());
+    assert!(!*handle.inner.reconnect_manager_running.borrow());
+
+    for network in ["testnet", "testnet4", "signet", "regtest"] {
+        crate::test_utils::reset_wasm_runtime_state_for_tests();
+        let node = configured_node(network);
+        node.reconnect_manager_on_resume()
+            .expect("inactive reconnect remains a no-op on supported networks");
+        sdk.reconnect_manager_on_resume(&node)
+            .expect("facade preserves supported-network behavior");
+        let handle = RlnWasmSdkNodeHandle { inner: node };
+        handle
+            .reconnect_manager_on_resume()
+            .expect("handle preserves supported-network behavior");
+        assert!(!*handle.inner.reconnect_manager_running.borrow());
+    }
+}
+
+#[wasm_bindgen_test(async)]
+async fn node_peer_bridges_keep_their_network_in_both_creation_orders() {
+    for mainnet_first in [false, true] {
+        crate::test_utils::reset_wasm_runtime_state_for_tests();
+        let (mainnet, regtest) = if mainnet_first {
+            let mainnet = configured_node("mainnet");
+            (mainnet, configured_node("regtest"))
+        } else {
+            let regtest = configured_node("regtest");
+            (configured_node("mainnet"), regtest)
+        };
+        assert_mainnet_rejection(
+            mainnet
+                .bridge
+                .connect_session(String::new(), String::new(), String::new())
+                .await,
+        );
+        assert_mainnet_rejection(
+            mainnet
+                .bridge
+                .connect_session_with_options(
+                    String::new(),
+                    String::new(),
+                    String::new(),
+                    JsValue::NULL,
+                )
+                .await,
+        );
+        for result in [
+            regtest
+                .bridge
+                .connect_session(String::new(), String::new(), String::new())
+                .await,
+            regtest
+                .bridge
+                .connect_session_with_options(
+                    String::new(),
+                    String::new(),
+                    String::new(),
+                    JsValue::NULL,
+                )
+                .await,
+        ] {
+            let Err(error) = result else {
+                panic!("empty peer pubkey unexpectedly accepted");
+            };
+            assert_eq!(
+                error.as_string().as_deref(),
+                Some(sdk_contracts::ERR_PEER_PUBKEY_EMPTY),
+                "another node's mainnet policy must not replace this node's validation"
+            );
+        }
+    }
 }
