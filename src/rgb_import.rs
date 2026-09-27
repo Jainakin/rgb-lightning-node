@@ -221,6 +221,12 @@ mod tests {
 
     #[test]
     fn base64_validation_is_bounded_and_payload_specific() {
+        for invalid in ["YQ", "YQ=", "YR==", "YQ==\n", "_w==", "!!!!"] {
+            assert!(matches!(
+                decode_rgb_base64(invalid.to_string(), RgbPayloadKind::Contract),
+                Err(APIError::InvalidRgbContract(_))
+            ));
+        }
         assert!(matches!(
             decode_rgb_base64(String::new(), RgbPayloadKind::Contract),
             Err(APIError::InvalidRgbContract(_))

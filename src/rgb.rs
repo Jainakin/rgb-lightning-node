@@ -25,8 +25,8 @@ use rgb_lib::{
         Transaction as RgbLibTransaction, Transfer, TransferKind, TransportEndpoint, Unspent,
         Wallet as RgbLibWallet,
     },
-    AssetSchema, Assignment, BitcoinNetwork, ConsignmentExt, ContractId, Error as RgbLibError, Fascia, RgbContract, RgbTransfer,
-    RgbTxid, UpdateRes, WitnessOrd,
+    AssetSchema, Assignment, BitcoinNetwork, ConsignmentExt, ContractId, Error as RgbLibError,
+    Fascia, RgbContract, RgbTransfer, RgbTxid, UpdateRes, WitnessOrd,
 };
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;

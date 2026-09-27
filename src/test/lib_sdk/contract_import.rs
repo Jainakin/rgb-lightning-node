@@ -1,6 +1,6 @@
 use crate::helpers::*;
 use base64::{engine::general_purpose, Engine as _};
-use rgb_lightning_node::{ImportRgbContractRequest, RlnError};
+use rgb_lightning_node::{ImportRgbContractRequest, RlnError, SdkIssueAssetIfaRequest};
 use serial_test::serial;
 use std::fs;
 
@@ -88,6 +88,88 @@ fn contract_import_roundtrips_through_sdk() {
             .expect("repeat RGB contract import");
         assert!(repeated.already_imported);
         assert_eq!(repeated.asset_id, issued.asset_id);
+
+        let ifa = issuer
+            .issueassetifa(SdkIssueAssetIfaRequest {
+                amounts: vec![1_000_000],
+                inflation_amounts: vec![1_000_000],
+                ticker: "USDT".to_string(),
+                name: "Regtest USDT".to_string(),
+                precision: 6,
+                reject_list_url: None,
+                issuance_type: None,
+            })
+            .expect("issue IFA contract");
+        let ifa_import = recipient
+            .importrgbcontract(ImportRgbContractRequest {
+                contract_base64: export_contract_base64(&issuer, &ifa.asset_id),
+                expected_asset_id: ifa.asset_id.clone(),
+            })
+            .expect("import IFA contract");
+        assert_eq!(ifa_import.metadata.asset_schema, "Ifa");
+        assert_eq!(ifa_import.metadata.precision, 6);
+        assert!(!ifa_import.already_imported);
+        let balance = recipient.asset_balance(ifa.asset_id.clone()).unwrap();
+        assert_eq!(
+            (balance.settled, balance.future, balance.spendable),
+            (0, 0, 0)
+        );
+
+        fund_and_create_utxos(&recipient, "recipient");
+        let invoice = recipient
+            .rgbinvoice(SdkRgbInvoiceRequest {
+                asset_id: Some(ifa.asset_id.clone()),
+                assignment_kind: Some(AssignmentKind::Fungible),
+                assignment_amount: Some(250_000),
+                duration_seconds: Some(600),
+                min_confirmations: 1,
+                witness: false,
+            })
+            .expect("fresh imported asset can create a named invoice");
+        issuer
+            .send_rgb(SendRgbRequest {
+                donation: true,
+                fee_rate: CREATE_UTXOS_FEE_RATE,
+                min_confirmations: 1,
+                recipient_groups: vec![AssetRecipients {
+                    asset_id: ifa.asset_id.clone(),
+                    recipients: vec![RgbRecipient {
+                        recipient_id: invoice.recipient_id,
+                        witness_data: None,
+                        assignment_kind: AssignmentKind::Fungible,
+                        assignment_amount: Some(250_000),
+                        transport_endpoints: vec![TransportEndpoint(
+                            PROXY_ENDPOINT_LOCAL.to_string(),
+                        )],
+                    }],
+                }],
+            })
+            .expect("send real IFA units to imported contract");
+        mine(1);
+        wait_for_balance(
+            &recipient,
+            &ifa.asset_id,
+            250_000,
+            std::time::Duration::from_secs(30),
+        );
+        wait_for_balance(
+            &issuer,
+            &ifa.asset_id,
+            750_000,
+            std::time::Duration::from_secs(30),
+        );
+
+        let repeated = recipient
+            .importrgbcontract(ImportRgbContractRequest {
+                contract_base64: export_contract_base64(&issuer, &ifa.asset_id),
+                expected_asset_id: ifa.asset_id.clone(),
+            })
+            .expect("reimport after receiving must preserve allocations");
+        assert!(repeated.already_imported);
+        assert_eq!(
+            recipient.asset_balance(ifa.asset_id).unwrap().spendable,
+            250_000
+        );
 
         let other_asset = issuer
             .issueassetnia(SdkIssueAssetNiaRequest {

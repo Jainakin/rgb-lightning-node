@@ -23,8 +23,8 @@ use crate::ldk::{
 #[cfg(feature = "vss")]
 use crate::ldk::{derive_vss_identity, derive_vss_identity_from_key_source};
 use crate::rgb::{check_rgb_proxy_endpoint, get_rgb_channel_info_optional};
-use crate::routes::DEFAULT_RGB_TRANSFER_EXPIRATION_SECS;
 use crate::rgb_import;
+use crate::routes::DEFAULT_RGB_TRANSFER_EXPIRATION_SECS;
 use crate::signer::{
     read_key_source_file, validate_bootstrap_payload, validate_key_source_matches_bootstrap,
     write_key_source_file, BootstrapData, KeySourceFile, SUPPORTED_SIGNER_API_LEVEL,
