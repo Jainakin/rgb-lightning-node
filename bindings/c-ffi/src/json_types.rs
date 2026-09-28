@@ -223,6 +223,8 @@ pub(crate) struct JsonSdkUnlockRequest {
     // gossip integration (#42).
     #[serde(default)]
     pub gossip_rgs_server_url: Option<String>,
+    #[serde(default)]
+    pub eth_rpc_url: Option<String>,
 }
 
 impl From<JsonSdkUnlockRequest> for SdkUnlockRequest {
@@ -235,6 +237,7 @@ impl From<JsonSdkUnlockRequest> for SdkUnlockRequest {
             announce_addresses: j.announce_addresses,
             announce_alias: j.announce_alias,
             gossip_rgs_server_url: j.gossip_rgs_server_url,
+            eth_rpc_url: j.eth_rpc_url,
         }
     }
 }

@@ -374,6 +374,20 @@ pub struct AssetIfa {
     pub linked_to_asset_id: Option<String>,
 }
 
+pub struct AssetBfa {
+    pub asset_id: ContractId,
+    pub ticker: String,
+    pub name: String,
+    pub details: Option<String>,
+    pub precision: u8,
+    pub initial_supply: u64,
+    pub timestamp: i64,
+    pub added_at: i64,
+    pub balance: AssetBalanceInfo,
+    pub media: Option<Media>,
+    pub reject_list_url: Option<String>,
+}
+
 pub struct RgbOutpoint {
     pub txid: String,
     pub vout: u32,
@@ -384,6 +398,7 @@ pub struct ListAssetsResponse {
     pub uda: Option<Vec<AssetUda>>,
     pub cfa: Option<Vec<AssetCfa>>,
     pub ifa: Option<Vec<AssetIfa>>,
+    pub bfa: Option<Vec<AssetBfa>>,
 }
 
 pub struct DecodeLnInvoiceResponse {
@@ -444,6 +459,8 @@ pub struct Transfer {
     pub change_utxo: Option<String>,
     pub expiration: Option<i64>,
     pub transport_endpoints: Vec<TransferTransportEndpoint>,
+    /// Local path of the transfer's consignment (e.g. the proof of a burn), when it has one.
+    pub consignment_path: Option<String>,
 }
 
 pub struct RgbAllocation {
@@ -487,6 +504,20 @@ pub struct ClaimHodlInvoiceRequest {
 
 pub struct ClaimHodlInvoiceResponse {
     pub changed: bool,
+}
+
+pub struct BurnRequest {
+    pub asset_id: ContractId,
+    pub amount: u64,
+    /// Required for BFA assets: the 32-byte recipient the burned amount is released to.
+    pub burn_recipient: Option<Vec<u8>>,
+    pub fee_rate: u64,
+    pub min_confirmations: u8,
+}
+
+pub struct BurnResponse {
+    pub txid: Txid,
+    pub batch_transfer_idx: i32,
 }
 
 pub struct InflateRequest {
@@ -539,6 +570,8 @@ pub struct SdkUnlockRequest {
     pub password: String,
     pub ldk_chain_sync: SdkLdkChainSync,
     pub indexer_url: Option<String>,
+    // Some(url) → the wallet supports BFA assets, validating them against this Ethereum RPC.
+    pub eth_rpc_url: Option<String>,
     pub proxy_endpoint: Option<String>,
     pub announce_addresses: Vec<String>,
     pub announce_alias: Option<String>,

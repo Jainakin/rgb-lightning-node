@@ -97,8 +97,8 @@ use tokio::time::timeout;
 use rgb_lib::wallet::rust_only::IndexerProtocol as RgbLibIndexerProtocol;
 use rgb_lib::wallet::RecipientType as RgbLibRecipientType;
 use rgb_lib::wallet::{
-    AssetCFA as RgbLibAssetCFA, AssetIFA as RgbLibAssetIFA, AssetNIA as RgbLibAssetNIA,
-    AssetUDA as RgbLibAssetUDA, EmbeddedMedia as RgbLibEmbeddedMedia,
+    AssetBFA as RgbLibAssetBFA, AssetCFA as RgbLibAssetCFA, AssetIFA as RgbLibAssetIFA,
+    AssetNIA as RgbLibAssetNIA, AssetUDA as RgbLibAssetUDA, EmbeddedMedia as RgbLibEmbeddedMedia,
     IfaIssuanceType as RgbLibIfaIssuanceType, Media as RgbLibMedia, Metadata as RgbLibMetadata,
     Outpoint as RgbLibOutpoint, ProofOfReserves as RgbLibProofOfReserves, Token as RgbLibToken,
     TokenLight as RgbLibTokenLight,
@@ -393,6 +393,7 @@ pub(crate) struct UnlockRequest {
     pub(crate) password: String,
     pub(crate) ldk_chain_sync: crate::core_types::LdkChainSync,
     pub(crate) indexer_url: Option<String>,
+    pub(crate) eth_rpc_url: Option<String>,
     pub(crate) proxy_endpoint: Option<String>,
     pub(crate) announce_addresses: Vec<String>,
     pub(crate) announce_alias: Option<String>,
@@ -607,6 +608,7 @@ pub(crate) struct ListAssetsData {
     pub(crate) uda: Option<Vec<AssetUDA>>,
     pub(crate) cfa: Option<Vec<AssetCFA>>,
     pub(crate) ifa: Option<Vec<AssetIFA>>,
+    pub(crate) bfa: Option<Vec<AssetBFA>>,
 }
 
 pub(crate) struct LnInvoiceData {
@@ -639,6 +641,19 @@ pub(crate) struct ClaimHodlInvoiceRequestData {
 
 pub(crate) struct ClaimHodlInvoiceResponseData {
     pub(crate) changed: bool,
+}
+
+pub(crate) struct BurnRequestData {
+    pub(crate) asset_id: String,
+    pub(crate) amount: u64,
+    pub(crate) burn_recipient: Option<Vec<u8>>,
+    pub(crate) fee_rate: u64,
+    pub(crate) min_confirmations: u8,
+}
+
+pub(crate) struct BurnResponseData {
+    pub(crate) txid: String,
+    pub(crate) batch_transfer_idx: i32,
 }
 
 pub(crate) struct InflateRequestData {
@@ -704,6 +719,7 @@ pub(crate) struct TransferData {
     pub(crate) change_utxo: Option<String>,
     pub(crate) expiration: Option<i64>,
     pub(crate) transport_endpoints: Vec<TransferTransportEndpointData>,
+    pub(crate) consignment_path: Option<String>,
 }
 
 pub(crate) struct RgbAllocationData {
@@ -1034,6 +1050,44 @@ impl From<RgbLibAssetCFA> for AssetCFA {
                 offchain_inbound: 0,
             },
             media: value.media.map(Into::into),
+        }
+    }
+}
+
+pub(crate) struct AssetBFA {
+    pub(crate) asset_id: String,
+    pub(crate) ticker: String,
+    pub(crate) name: String,
+    pub(crate) details: Option<String>,
+    pub(crate) precision: u8,
+    pub(crate) initial_supply: u64,
+    pub(crate) timestamp: i64,
+    pub(crate) added_at: i64,
+    pub(crate) balance: AssetBalance,
+    pub(crate) media: Option<Media>,
+    pub(crate) reject_list_url: Option<String>,
+}
+
+impl From<RgbLibAssetBFA> for AssetBFA {
+    fn from(value: RgbLibAssetBFA) -> Self {
+        Self {
+            asset_id: value.asset_id,
+            ticker: value.ticker,
+            name: value.name,
+            details: value.details,
+            precision: value.precision,
+            initial_supply: value.initial_supply,
+            timestamp: value.timestamp,
+            added_at: value.added_at,
+            balance: AssetBalance {
+                settled: value.balance.settled,
+                future: value.balance.future,
+                spendable: value.balance.spendable,
+                offchain_outbound: 0,
+                offchain_inbound: 0,
+            },
+            media: value.media.map(Into::into),
+            reject_list_url: value.reject_list_url,
         }
     }
 }
@@ -1821,7 +1875,27 @@ pub(crate) async fn list_assets(
             .collect()
     });
 
-    Ok(ListAssetsData { nia, uda, cfa, ifa })
+    let bfa = rgb_assets.bfa.map(|assets| {
+        assets
+            .into_iter()
+            .map(|a| {
+                let mut asset: AssetBFA = a.into();
+                (
+                    asset.balance.offchain_outbound,
+                    asset.balance.offchain_inbound,
+                ) = *offchain_balances.get(&asset.asset_id).unwrap_or(&(0, 0));
+                asset
+            })
+            .collect()
+    });
+
+    Ok(ListAssetsData {
+        nia,
+        uda,
+        cfa,
+        ifa,
+        bfa,
+    })
 }
 
 pub(crate) async fn send_rgb(
@@ -2107,6 +2181,7 @@ pub(crate) async fn unlock(state: Arc<AppState>, request: UnlockRequest) -> Resu
     let unlock_request = crate::core_types::UnlockRequest {
         ldk_chain_sync: request.ldk_chain_sync,
         indexer_url: request.indexer_url,
+        eth_rpc_url: request.eth_rpc_url,
         proxy_endpoint: request.proxy_endpoint,
         announce_addresses: request.announce_addresses,
         announce_alias: request.announce_alias,
@@ -2204,6 +2279,7 @@ pub(crate) async fn unlock_with_attached_external_signer(
     let unlock_request = crate::core_types::UnlockRequest {
         ldk_chain_sync: request.ldk_chain_sync,
         indexer_url: request.indexer_url,
+        eth_rpc_url: request.eth_rpc_url,
         proxy_endpoint: request.proxy_endpoint,
         announce_addresses: request.announce_addresses,
         announce_alias: request.announce_alias,
@@ -3081,6 +3157,8 @@ pub(crate) async fn open_channel(
                 RgbLibAssignment::Fungible(*asset_amount)
             }
             RgbLibAssetSchema::Uda => RgbLibAssignment::NonFungible,
+            // the LN-side RGB wallet does not support the BFA schema
+            RgbLibAssetSchema::Bfa => return Err(APIError::UnsupportedSchema(s!("Bfa"))),
         };
 
         let recipient_map = map! {
@@ -4308,6 +4386,37 @@ pub(crate) async fn claim_hodl_invoice(
     Ok(ClaimHodlInvoiceResponseData { changed: true })
 }
 
+pub(crate) async fn burn(
+    state: Arc<AppState>,
+    request: BurnRequestData,
+) -> Result<BurnResponseData, APIError> {
+    let guard = check_unlocked(&state).await?;
+    let unlocked_state = guard.as_ref().unwrap();
+    if unlocked_state.external_signer_mode {
+        return Err(APIError::UnsupportedInExternalSignerMode(
+            "burn is not supported in external signer mode".to_string(),
+        ));
+    }
+
+    let unlocked_state_copy = unlocked_state.clone();
+    let burn_result = tokio::task::spawn_blocking(move || {
+        unlocked_state_copy.rgb_burn(
+            request.asset_id,
+            request.amount,
+            request.burn_recipient,
+            request.fee_rate,
+            request.min_confirmations,
+        )
+    })
+    .await
+    .unwrap()?;
+
+    Ok(BurnResponseData {
+        txid: burn_result.txid,
+        batch_transfer_idx: burn_result.batch_transfer_idx,
+    })
+}
+
 pub(crate) async fn inflate(
     state: Arc<AppState>,
     request: InflateRequestData,
@@ -4490,6 +4599,7 @@ fn to_transfer_data(transfer: rgb_lib::wallet::Transfer) -> TransferData {
                 used: tte.used,
             })
             .collect(),
+        consignment_path: transfer.consignment_path,
     }
 }
 
@@ -4507,6 +4617,24 @@ pub(crate) async fn list_transactions(
         .map(to_transaction_data)
         .filter(|tx| txid.as_ref().is_none_or(|t| &tx.txid == t))
         .collect())
+}
+
+/// Read the consignment of an outgoing transfer (send, burn, inflation, link) by its asset ID and
+/// txid, e.g. to hand a burn consignment to whoever releases the burned amount.
+pub(crate) async fn get_consignment(
+    state: Arc<AppState>,
+    asset_id: String,
+    txid: String,
+) -> Result<Vec<u8>, APIError> {
+    crate::routes::validate_consignment_lookup(&asset_id, &txid)?;
+    let guard = check_unlocked(&state).await?;
+    let unlocked_state = guard.as_ref().unwrap();
+
+    let file_path = unlocked_state.rgb_get_send_consignment_path(&asset_id, &txid);
+    if !file_path.exists() {
+        return Err(APIError::ConsignmentNotFound);
+    }
+    Ok(tokio::fs::read(file_path).await?)
 }
 
 pub(crate) async fn list_transfers(
@@ -4729,6 +4857,7 @@ mod tests {
             password: "unused-in-external-mode".to_string(),
             ldk_chain_sync: sample_ldk_chain_sync(),
             indexer_url: Some("127.0.0.1:50001".to_string()),
+            eth_rpc_url: None,
             proxy_endpoint: Some("rpc://127.0.0.1:3000/json-rpc".to_string()),
             announce_addresses: vec![],
             announce_alias: None,

@@ -49,10 +49,11 @@ use rgb_lib::{
             check_indexer_url as rgb_lib_check_indexer_url,
             IndexerProtocol as RgbLibIndexerProtocol,
         },
-        AssetCFA as RgbLibAssetCFA, AssetFilter as RgbLibAssetFilter, AssetIFA as RgbLibAssetIFA,
-        AssetNIA as RgbLibAssetNIA, AssetUDA as RgbLibAssetUDA, Balance as RgbLibBalance,
-        EmbeddedMedia as RgbLibEmbeddedMedia, IfaIssuanceType as RgbLibIfaIssuanceType,
-        Invoice as RgbLibInvoice, Media as RgbLibMedia, Metadata as RgbLibMetadata,
+        AssetBFA as RgbLibAssetBFA, AssetCFA as RgbLibAssetCFA, AssetFilter as RgbLibAssetFilter,
+        AssetIFA as RgbLibAssetIFA, AssetNIA as RgbLibAssetNIA, AssetUDA as RgbLibAssetUDA,
+        Balance as RgbLibBalance, EmbeddedMedia as RgbLibEmbeddedMedia,
+        IfaIssuanceType as RgbLibIfaIssuanceType, Invoice as RgbLibInvoice, Media as RgbLibMedia,
+        Metadata as RgbLibMetadata,
         OperationResult as RgbLibOperationResult, Outpoint as RgbLibOutpoint,
         ProofOfReserves as RgbLibProofOfReserves, Recipient as RgbLibRecipient, RecipientInfo,
         RecipientType as RgbLibRecipientType, RefreshFilter as RgbLibRefreshFilter,
@@ -190,6 +191,39 @@ impl From<RgbLibAssetCFA> for AssetCFA {
             added_at: value.added_at,
             balance: value.balance.into(),
             media: value.media.map(|m| m.into()),
+        }
+    }
+}
+
+#[derive(Deserialize, Serialize)]
+pub(crate) struct AssetBFA {
+    pub(crate) asset_id: String,
+    pub(crate) ticker: String,
+    pub(crate) name: String,
+    pub(crate) details: Option<String>,
+    pub(crate) precision: u8,
+    pub(crate) initial_supply: u64,
+    pub(crate) timestamp: i64,
+    pub(crate) added_at: i64,
+    pub(crate) balance: AssetBalanceResponse,
+    pub(crate) media: Option<Media>,
+    pub(crate) reject_list_url: Option<String>,
+}
+
+impl From<RgbLibAssetBFA> for AssetBFA {
+    fn from(value: RgbLibAssetBFA) -> Self {
+        Self {
+            asset_id: value.asset_id,
+            ticker: value.ticker,
+            name: value.name,
+            details: value.details,
+            precision: value.precision,
+            initial_supply: value.initial_supply,
+            timestamp: value.timestamp,
+            added_at: value.added_at,
+            balance: value.balance.into(),
+            media: value.media.map(|m| m.into()),
+            reject_list_url: value.reject_list_url,
         }
     }
 }
@@ -341,6 +375,7 @@ pub(crate) enum AssetSchema {
     Uda,
     Cfa,
     Ifa,
+    Bfa,
 }
 
 impl From<AssetSchema> for RgbLibAssetSchema {
@@ -350,6 +385,7 @@ impl From<AssetSchema> for RgbLibAssetSchema {
             AssetSchema::Uda => Self::Uda,
             AssetSchema::Cfa => Self::Cfa,
             AssetSchema::Ifa => Self::Ifa,
+            AssetSchema::Bfa => Self::Bfa,
         }
     }
 }
@@ -361,6 +397,7 @@ impl From<RgbLibAssetSchema> for AssetSchema {
             RgbLibAssetSchema::Uda => Self::Uda,
             RgbLibAssetSchema::Cfa => Self::Cfa,
             RgbLibAssetSchema::Ifa => Self::Ifa,
+            RgbLibAssetSchema::Bfa => Self::Bfa,
         }
     }
 }
@@ -402,6 +439,7 @@ pub(crate) enum Assignment {
     InflationRight(u64),
     Any,
     LinkRight,
+    BridgeRight,
 }
 
 impl From<RgbLibAssignment> for Assignment {
@@ -412,6 +450,7 @@ impl From<RgbLibAssignment> for Assignment {
             RgbLibAssignment::InflationRight(amt) => Self::InflationRight(amt),
             RgbLibAssignment::Any => Self::Any,
             RgbLibAssignment::LinkRight => Self::LinkRight,
+            RgbLibAssignment::BridgeRight => Self::BridgeRight,
         }
     }
 }
@@ -424,6 +463,7 @@ impl From<Assignment> for RgbLibAssignment {
             Assignment::InflationRight(amt) => Self::InflationRight(amt),
             Assignment::Any => Self::Any,
             Assignment::LinkRight => Self::LinkRight,
+            Assignment::BridgeRight => Self::BridgeRight,
         }
     }
 }
@@ -751,6 +791,22 @@ impl From<RgbLibIndexerProtocol> for IndexerProtocol {
 }
 
 #[derive(Deserialize, Serialize)]
+pub(crate) struct BurnRequest {
+    pub(crate) asset_id: String,
+    pub(crate) amount: u64,
+    /// hex-encoded, required for BFA assets (32 bytes: where the burned amount is released)
+    pub(crate) burn_recipient: Option<String>,
+    pub(crate) fee_rate: u64,
+    pub(crate) min_confirmations: u8,
+}
+
+#[derive(Deserialize, Serialize)]
+pub(crate) struct BurnResponse {
+    pub(crate) txid: String,
+    pub(crate) batch_transfer_idx: i32,
+}
+
+#[derive(Deserialize, Serialize)]
 pub(crate) struct InflateRequest {
     pub(crate) asset_id: String,
     pub(crate) inflation_amounts: Vec<u64>,
@@ -880,6 +936,7 @@ pub(crate) struct ListAssetsResponse {
     pub(crate) uda: Option<Vec<AssetUDA>>,
     pub(crate) cfa: Option<Vec<AssetCFA>>,
     pub(crate) ifa: Option<Vec<AssetIFA>>,
+    pub(crate) bfa: Option<Vec<AssetBFA>>,
 }
 
 #[derive(Deserialize, Serialize)]
@@ -1636,6 +1693,9 @@ pub(crate) struct UnlockRequest {
     pub(crate) ldk_chain_sync: LdkChainSync,
     // both fall back to the `[chain]` config section when omitted
     pub(crate) indexer_url: Option<String>,
+    // falls back to the `[chain]` config section too; when set, the node supports BFA assets
+    #[serde(default)]
+    pub(crate) eth_rpc_url: Option<String>,
     pub(crate) proxy_endpoint: Option<String>,
     pub(crate) announce_addresses: Vec<String>,
     pub(crate) announce_alias: Option<String>,
@@ -1654,6 +1714,7 @@ impl From<UnlockRequest> for CoreUnlockRequest {
         Self {
             ldk_chain_sync: value.ldk_chain_sync,
             indexer_url: value.indexer_url,
+            eth_rpc_url: value.eth_rpc_url,
             proxy_endpoint: value.proxy_endpoint,
             announce_addresses: value.announce_addresses,
             announce_alias: value.announce_alias,
@@ -2767,7 +2828,7 @@ pub(crate) async fn get_channel_id(
 
 // Both fields index a filesystem path (`<transfers>/<txid>/<asset_id>/…`); validate their shapes
 // so a `..`/separator/absolute value cannot traverse out of the consignment dir.
-fn validate_consignment_lookup(asset_id: &str, txid: &str) -> Result<(), APIError> {
+pub(crate) fn validate_consignment_lookup(asset_id: &str, txid: &str) -> Result<(), APIError> {
     ContractId::from_str(asset_id).map_err(|_| APIError::InvalidAssetID(asset_id.to_string()))?;
     bitcoin::Txid::from_str(txid)
         .map_err(|_| APIError::InvalidRequest(format!("invalid txid: {txid}")))?;
@@ -2933,6 +2994,48 @@ pub(crate) async fn get_swap(
     }
 
     Err(APIError::SwapNotFound(payload.payment_hash))
+}
+
+pub(crate) async fn burn(
+    State(state): State<Arc<AppState>>,
+    WithRejection(Json(payload), _): WithRejection<Json<BurnRequest>, APIError>,
+) -> Result<Json<BurnResponse>, APIError> {
+    no_cancel(async move {
+        let guard = state.check_unlocked().await?;
+        let unlocked_state = guard.as_ref().unwrap();
+        if unlocked_state.external_signer_mode {
+            return Err(APIError::UnsupportedInExternalSignerMode(
+                "burn is not supported in external signer mode".to_string(),
+            ));
+        }
+
+        let burn_recipient = payload
+            .burn_recipient
+            .map(|r| {
+                hex_str_to_vec(&r)
+                    .ok_or_else(|| APIError::InvalidBurnRecipient(s!("invalid hex string")))
+            })
+            .transpose()?;
+
+        let unlocked_state_copy = unlocked_state.clone();
+        let burn_result = tokio::task::spawn_blocking(move || {
+            unlocked_state_copy.rgb_burn(
+                payload.asset_id,
+                payload.amount,
+                burn_recipient,
+                payload.fee_rate,
+                payload.min_confirmations,
+            )
+        })
+        .await
+        .unwrap()?;
+
+        Ok(Json(BurnResponse {
+            txid: burn_result.txid,
+            batch_transfer_idx: burn_result.batch_transfer_idx,
+        }))
+    })
+    .await
 }
 
 pub(crate) async fn inflate(
@@ -3427,7 +3530,27 @@ pub(crate) async fn list_assets(
             .collect()
     });
 
-    Ok(Json(ListAssetsResponse { nia, uda, cfa, ifa }))
+    let bfa = rgb_assets.bfa.map(|assets| {
+        assets
+            .into_iter()
+            .map(|a| {
+                let mut asset: AssetBFA = a.into();
+                (
+                    asset.balance.offchain_outbound,
+                    asset.balance.offchain_inbound,
+                ) = *offchain_balances.get(&asset.asset_id).unwrap_or(&(0, 0));
+                asset
+            })
+            .collect()
+    });
+
+    Ok(Json(ListAssetsResponse {
+        nia,
+        uda,
+        cfa,
+        ifa,
+        bfa,
+    }))
 }
 
 pub(crate) async fn list_channels(
@@ -4640,6 +4763,10 @@ pub(crate) async fn open_channel(
             let schema = unlocked_state
                 .rgb_get_asset_metadata(*contract_id)?
                 .asset_schema;
+            // the LN-side RGB wallet does not support the BFA schema
+            if schema == RgbLibAssetSchema::Bfa {
+                return Err(APIError::UnsupportedSchema(s!("Bfa")));
+            }
             if !is_virtual_open {
                 let mut fake_p2wsh: [u8; 34] = [0; 34];
                 fake_p2wsh[1] = 32;
@@ -4652,6 +4779,7 @@ pub(crate) async fn open_channel(
                         RgbLibAssignment::Fungible(*asset_amount)
                     }
                     RgbLibAssetSchema::Uda => RgbLibAssignment::NonFungible,
+                    RgbLibAssetSchema::Bfa => unreachable!("rejected above"),
                 };
 
                 let recipient_map = map! {
