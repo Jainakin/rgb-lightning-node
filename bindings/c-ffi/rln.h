@@ -44,6 +44,8 @@ struct CResultString rln_asset_metadata(const struct COpaqueStruct *node, const 
 
 struct CResultString rln_btc_balance(const struct COpaqueStruct *node, bool skip_sync);
 
+struct CResultString rln_burn(const struct COpaqueStruct *node, const char *request_json);
+
 struct CResultString rln_cancel_hodl_invoice(const struct COpaqueStruct *node,
                                              const char *request_json);
 
@@ -83,6 +85,14 @@ struct CResultString rln_get_asset_media(const struct COpaqueStruct *node, const
 
 struct CResultString rln_get_channel_id(const struct COpaqueStruct *node,
                                         const char *temporary_channel_id_hex);
+
+/**
+ * Returns `{"bytes_hex": ...}` with the consignment of an outgoing transfer (send, burn,
+ * inflation, link), e.g. the proof of a burn to hand to whoever releases the burned amount.
+ */
+struct CResultString rln_get_consignment(const struct COpaqueStruct *node,
+                                         const char *asset_id,
+                                         const char *txid);
 
 struct CResultString rln_get_payment(const struct COpaqueStruct *node,
                                      const char *payment_hash_hex,

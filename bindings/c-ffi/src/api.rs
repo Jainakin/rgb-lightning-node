@@ -378,6 +378,28 @@ pub(crate) fn fail_transfers(
     json(JsonFailTransfersResponse::from(resp))
 }
 
+pub(crate) fn burn(node: &COpaqueStruct, request_json: *const c_char) -> Result<String, Error> {
+    let node = require_handle(node)?;
+    let req: JsonBurnRequest = parse_req(request_json)?;
+    let resp = node.burn(req.try_into()?)?;
+    json(JsonBurnResponse::from(resp))
+}
+
+pub(crate) fn get_consignment(
+    node: &COpaqueStruct,
+    asset_id: *const c_char,
+    txid: *const c_char,
+) -> Result<String, Error> {
+    let node = require_handle(node)?;
+    let asset_id = parse_contract_id(&ptr_to_string(asset_id))?;
+    let txid = rln::Txid::from_str(&ptr_to_string(txid))
+        .map_err(|e| Error::StringParse(format!("invalid txid: {e}")))?;
+    let bytes = node.get_consignment(asset_id, txid)?;
+    json(JsonGetConsignmentResponse {
+        bytes_hex: bytes.to_lower_hex_string(),
+    })
+}
+
 pub(crate) fn inflate(node: &COpaqueStruct, request_json: *const c_char) -> Result<String, Error> {
     let node = require_handle(node)?;
     let req: JsonInflateRequest = parse_req(request_json)?;

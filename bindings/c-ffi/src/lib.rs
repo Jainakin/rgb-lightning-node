@@ -387,6 +387,25 @@ pub extern "C" fn rln_fail_transfers(
 }
 
 #[unsafe(no_mangle)]
+pub extern "C" fn rln_burn(node: &COpaqueStruct, request_json: *const c_char) -> CResultString {
+    ffi_call!("rln_burn", api::burn(node, request_json))
+}
+
+/// Returns `{"bytes_hex": ...}` with the consignment of an outgoing transfer (send, burn,
+/// inflation, link), e.g. the proof of a burn to hand to whoever releases the burned amount.
+#[unsafe(no_mangle)]
+pub extern "C" fn rln_get_consignment(
+    node: &COpaqueStruct,
+    asset_id: *const c_char,
+    txid: *const c_char,
+) -> CResultString {
+    ffi_call!(
+        "rln_get_consignment",
+        api::get_consignment(node, asset_id, txid)
+    )
+}
+
+#[unsafe(no_mangle)]
 pub extern "C" fn rln_inflate(node: &COpaqueStruct, request_json: *const c_char) -> CResultString {
     ffi_call!("rln_inflate", api::inflate(node, request_json))
 }

@@ -14,13 +14,14 @@ use std::str::FromStr;
 use hex::DisplayHex;
 use hex::FromHex;
 use rgb_lightning_node::{
-    AddressInfo, AssetBalanceInfo, AssetCfa, AssetIfa, AssetLinkRecord, AssetMediaResponse,
-    AssetMetadataInfo, AssetNia, AssetRecipients, AssetUda, AssignmentKind, BlockTime, BtcBalance,
-    BtcBalanceInfo, CancelHodlInvoiceRequest, Channel, ChannelId, ChannelStatus,
-    CheckIndexerUrlResponse, ClaimHodlInvoiceRequest, ClaimHodlInvoiceResponse, ContractId,
-    DecodeLnInvoiceResponse, DecodeRgbInvoiceResponse, EmbeddedMedia, EstimateFeeResponse,
-    HtlcStatus, IfaIssuanceType, ImportRgbContractRequest, ImportRgbContractResponse,
-    ImportRgbTransferConsignmentRequest, ImportRgbTransferConsignmentResponse, InflateRequest,
+    AddressInfo, AssetBalanceInfo, AssetBfa, AssetCfa, AssetIfa, AssetLinkRecord,
+    AssetMediaResponse, AssetMetadataInfo, AssetNia, AssetRecipients, AssetUda, AssignmentKind,
+    BlockTime, BtcBalance, BtcBalanceInfo, BurnRequest, BurnResponse, CancelHodlInvoiceRequest,
+    Channel, ChannelId, ChannelStatus, CheckIndexerUrlResponse, ClaimHodlInvoiceRequest,
+    ClaimHodlInvoiceResponse, ContractId, DecodeLnInvoiceResponse, DecodeRgbInvoiceResponse,
+    EmbeddedMedia, EstimateFeeResponse, HtlcStatus, IfaIssuanceType, ImportRgbContractRequest,
+    ImportRgbContractResponse, ImportRgbTransferConsignmentRequest,
+    ImportRgbTransferConsignmentResponse, InflateRequest,
     InflateResponse, InvoiceStatus, ListAssetsResponse, LnInvoiceRequest, LnInvoiceResponse, Media,
     MediaAttachment, NetworkInfo, NodeInfo, Payment, PaymentHash, PaymentType, Peer,
     ProofOfReserves, PublicKey, RecipientId, RgbAllocation, RgbOutpoint, RgbRecipient,
@@ -1172,6 +1173,56 @@ impl From<SdkFailTransfersResponse> for JsonFailTransfersResponse {
 }
 
 #[derive(Debug, Deserialize)]
+pub(crate) struct JsonBurnRequest {
+    pub asset_id: String,
+    pub amount: u64,
+    /// Hex-encoded; required for BFA assets (32 bytes: where the burned amount is released).
+    #[serde(default)]
+    pub burn_recipient: Option<String>,
+    pub fee_rate: u64,
+    pub min_confirmations: u8,
+}
+
+impl TryFrom<JsonBurnRequest> for BurnRequest {
+    type Error = Error;
+    fn try_from(j: JsonBurnRequest) -> Result<Self, Self::Error> {
+        Ok(BurnRequest {
+            asset_id: parse_contract_id(&j.asset_id)?,
+            amount: j.amount,
+            burn_recipient: j
+                .burn_recipient
+                .map(|r| {
+                    Vec::<u8>::from_hex(&r)
+                        .map_err(|e| Error::HexConversion(format!("invalid burn_recipient: {e}")))
+                })
+                .transpose()?,
+            fee_rate: j.fee_rate,
+            min_confirmations: j.min_confirmations,
+        })
+    }
+}
+
+#[derive(Debug, Serialize)]
+pub(crate) struct JsonBurnResponse {
+    pub txid: String,
+    pub batch_transfer_idx: i32,
+}
+
+impl From<BurnResponse> for JsonBurnResponse {
+    fn from(r: BurnResponse) -> Self {
+        JsonBurnResponse {
+            txid: fmt_txid(&r.txid),
+            batch_transfer_idx: r.batch_transfer_idx,
+        }
+    }
+}
+
+#[derive(Debug, Serialize)]
+pub(crate) struct JsonGetConsignmentResponse {
+    pub bytes_hex: String,
+}
+
+#[derive(Debug, Deserialize)]
 pub(crate) struct JsonInflateRequest {
     pub asset_id: String,
     pub inflation_amounts: Vec<u64>,
@@ -1626,6 +1677,39 @@ impl From<AssetIfa> for JsonAssetIfa {
 }
 
 #[derive(Debug, Serialize)]
+pub(crate) struct JsonAssetBfa {
+    pub asset_id: String,
+    pub ticker: String,
+    pub name: String,
+    pub details: Option<String>,
+    pub precision: u8,
+    pub initial_supply: u64,
+    pub timestamp: i64,
+    pub added_at: i64,
+    pub balance: JsonAssetBalanceInfo,
+    pub media: Option<JsonMedia>,
+    pub reject_list_url: Option<String>,
+}
+
+impl From<AssetBfa> for JsonAssetBfa {
+    fn from(a: AssetBfa) -> Self {
+        JsonAssetBfa {
+            asset_id: fmt_contract_id(&a.asset_id),
+            ticker: a.ticker,
+            name: a.name,
+            details: a.details,
+            precision: a.precision,
+            initial_supply: a.initial_supply,
+            timestamp: a.timestamp,
+            added_at: a.added_at,
+            balance: a.balance.into(),
+            media: a.media.map(Into::into),
+            reject_list_url: a.reject_list_url,
+        }
+    }
+}
+
+#[derive(Debug, Serialize)]
 pub(crate) struct JsonAssetUda {
     pub asset_id: String,
     pub ticker: String,
@@ -1660,6 +1744,7 @@ pub(crate) struct JsonListAssetsResponse {
     pub uda: Option<Vec<JsonAssetUda>>,
     pub cfa: Option<Vec<JsonAssetCfa>>,
     pub ifa: Option<Vec<JsonAssetIfa>>,
+    pub bfa: Option<Vec<JsonAssetBfa>>,
 }
 
 impl From<ListAssetsResponse> for JsonListAssetsResponse {
@@ -1669,6 +1754,7 @@ impl From<ListAssetsResponse> for JsonListAssetsResponse {
             uda: r.uda.map(|v| v.into_iter().map(Into::into).collect()),
             cfa: r.cfa.map(|v| v.into_iter().map(Into::into).collect()),
             ifa: r.ifa.map(|v| v.into_iter().map(Into::into).collect()),
+            bfa: r.bfa.map(|v| v.into_iter().map(Into::into).collect()),
         }
     }
 }
@@ -2039,6 +2125,7 @@ pub(crate) struct JsonTransfer {
     pub change_utxo: Option<String>,
     pub expiration: Option<i64>,
     pub transport_endpoints: Vec<JsonTransferTransportEndpoint>,
+    pub consignment_path: Option<String>,
 }
 
 impl From<Transfer> for JsonTransfer {
@@ -2058,6 +2145,7 @@ impl From<Transfer> for JsonTransfer {
             change_utxo: t.change_utxo,
             expiration: t.expiration,
             transport_endpoints: t.transport_endpoints.into_iter().map(Into::into).collect(),
+            consignment_path: t.consignment_path,
         }
     }
 }
