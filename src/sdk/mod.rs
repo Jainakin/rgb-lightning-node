@@ -719,7 +719,6 @@ pub(crate) struct TransferData {
     pub(crate) change_utxo: Option<String>,
     pub(crate) expiration: Option<i64>,
     pub(crate) transport_endpoints: Vec<TransferTransportEndpointData>,
-    pub(crate) consignment_path: Option<String>,
 }
 
 pub(crate) struct RgbAllocationData {
@@ -4599,7 +4598,6 @@ fn to_transfer_data(transfer: rgb_lib::wallet::Transfer) -> TransferData {
                 used: tte.used,
             })
             .collect(),
-        consignment_path: transfer.consignment_path,
     }
 }
 
@@ -4619,13 +4617,13 @@ pub(crate) async fn list_transactions(
         .collect())
 }
 
-/// Read the consignment of an outgoing transfer (send, burn, inflation, link) by its asset ID and
-/// txid, e.g. to hand a burn consignment to whoever releases the burned amount.
-pub(crate) async fn get_consignment(
+/// Local path of the consignment of an outgoing transfer (send, burn, inflation, link), identified
+/// by its asset ID and txid, e.g. the proof of a burn to hand to whoever releases the burned amount.
+pub(crate) async fn get_consignment_path(
     state: Arc<AppState>,
     asset_id: String,
     txid: String,
-) -> Result<Vec<u8>, APIError> {
+) -> Result<std::path::PathBuf, APIError> {
     crate::routes::validate_consignment_lookup(&asset_id, &txid)?;
     let guard = check_unlocked(&state).await?;
     let unlocked_state = guard.as_ref().unwrap();
@@ -4634,6 +4632,16 @@ pub(crate) async fn get_consignment(
     if !file_path.exists() {
         return Err(APIError::ConsignmentNotFound);
     }
+    Ok(file_path)
+}
+
+/// Read the consignment returned by [`get_consignment_path`].
+pub(crate) async fn get_consignment(
+    state: Arc<AppState>,
+    asset_id: String,
+    txid: String,
+) -> Result<Vec<u8>, APIError> {
+    let file_path = get_consignment_path(state, asset_id, txid).await?;
     Ok(tokio::fs::read(file_path).await?)
 }
 

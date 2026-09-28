@@ -1222,6 +1222,11 @@ pub(crate) struct JsonGetConsignmentResponse {
     pub bytes_hex: String,
 }
 
+#[derive(Debug, Serialize)]
+pub(crate) struct JsonGetConsignmentPathResponse {
+    pub path: String,
+}
+
 #[derive(Debug, Deserialize)]
 pub(crate) struct JsonInflateRequest {
     pub asset_id: String,
@@ -2125,7 +2130,6 @@ pub(crate) struct JsonTransfer {
     pub change_utxo: Option<String>,
     pub expiration: Option<i64>,
     pub transport_endpoints: Vec<JsonTransferTransportEndpoint>,
-    pub consignment_path: Option<String>,
 }
 
 impl From<Transfer> for JsonTransfer {
@@ -2145,7 +2149,6 @@ impl From<Transfer> for JsonTransfer {
             change_utxo: t.change_utxo,
             expiration: t.expiration,
             transport_endpoints: t.transport_endpoints.into_iter().map(Into::into).collect(),
-            consignment_path: t.consignment_path,
         }
     }
 }

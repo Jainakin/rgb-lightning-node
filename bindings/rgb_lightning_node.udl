@@ -129,6 +129,8 @@ interface SdkNode {
     [Throws=RlnError]
     bytes get_consignment(ContractId asset_id, Txid txid);
     [Throws=RlnError]
+    string get_consignment_path(ContractId asset_id, Txid txid);
+    [Throws=RlnError]
     InflateResponse inflate(InflateRequest request);
     [Throws=RlnError]
     SendRgbResponse send_rgb(SendRgbRequest request);
@@ -549,7 +551,6 @@ dictionary Transfer {
     string? change_utxo;
     i64? expiration;
     sequence<TransferTransportEndpoint> transport_endpoints;
-    string? consignment_path = null;
 };
 
 dictionary RgbAllocation {

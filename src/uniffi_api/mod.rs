@@ -408,7 +408,6 @@ fn map_transfer(t: crate::sdk::TransferData) -> Result<Transfer, RlnError> {
                 used: e.used,
             })
             .collect(),
-        consignment_path: t.consignment_path,
     })
 }
 
@@ -1613,6 +1612,20 @@ impl SdkNode {
         })
     }
 
+    pub fn get_consignment_path(
+        &self,
+        asset_id: ContractId,
+        txid: Txid,
+    ) -> Result<String, RlnError> {
+        let state = self.handle.app_state();
+        let path = block_on_sdk(sdk::get_consignment_path(
+            state,
+            asset_id.to_string(),
+            txid.to_string(),
+        ))?;
+        Ok(path.to_string_lossy().to_string())
+    }
+
     pub fn get_consignment(&self, asset_id: ContractId, txid: Txid) -> Result<Vec<u8>, RlnError> {
         let state = self.handle.app_state();
         block_on_sdk(sdk::get_consignment(
@@ -1964,6 +1977,11 @@ pub fn sdk_claimhodlinvoice(
 pub fn sdk_burn(request: BurnRequest) -> Result<BurnResponse, RlnError> {
     let handle = NodeHandle::from_app_state(get_uniffi_app_state()?);
     SdkNode { handle }.burn(request)
+}
+
+pub fn sdk_get_consignment_path(asset_id: ContractId, txid: Txid) -> Result<String, RlnError> {
+    let handle = NodeHandle::from_app_state(get_uniffi_app_state()?);
+    SdkNode { handle }.get_consignment_path(asset_id, txid)
 }
 
 pub fn sdk_get_consignment(asset_id: ContractId, txid: Txid) -> Result<Vec<u8>, RlnError> {

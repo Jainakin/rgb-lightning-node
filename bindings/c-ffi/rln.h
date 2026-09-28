@@ -94,6 +94,14 @@ struct CResultString rln_get_consignment(const struct COpaqueStruct *node,
                                          const char *asset_id,
                                          const char *txid);
 
+/**
+ * Returns `{"path": ...}`: the local path of the same consignment [`rln_get_consignment`]
+ * returns, to read or share the file without copying it through the FFI.
+ */
+struct CResultString rln_get_consignment_path(const struct COpaqueStruct *node,
+                                              const char *asset_id,
+                                              const char *txid);
+
 struct CResultString rln_get_payment(const struct COpaqueStruct *node,
                                      const char *payment_hash_hex,
                                      const char *payment_type);

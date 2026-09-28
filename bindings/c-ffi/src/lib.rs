@@ -405,6 +405,20 @@ pub extern "C" fn rln_get_consignment(
     )
 }
 
+/// Returns `{"path": ...}`: the local path of the same consignment [`rln_get_consignment`]
+/// returns, to read or share the file without copying it through the FFI.
+#[unsafe(no_mangle)]
+pub extern "C" fn rln_get_consignment_path(
+    node: &COpaqueStruct,
+    asset_id: *const c_char,
+    txid: *const c_char,
+) -> CResultString {
+    ffi_call!(
+        "rln_get_consignment_path",
+        api::get_consignment_path(node, asset_id, txid)
+    )
+}
+
 #[unsafe(no_mangle)]
 pub extern "C" fn rln_inflate(node: &COpaqueStruct, request_json: *const c_char) -> CResultString {
     ffi_call!("rln_inflate", api::inflate(node, request_json))

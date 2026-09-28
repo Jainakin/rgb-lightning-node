@@ -459,8 +459,6 @@ pub struct Transfer {
     pub change_utxo: Option<String>,
     pub expiration: Option<i64>,
     pub transport_endpoints: Vec<TransferTransportEndpoint>,
-    /// Local path of the transfer's consignment (e.g. the proof of a burn), when it has one.
-    pub consignment_path: Option<String>,
 }
 
 pub struct RgbAllocation {
