@@ -155,6 +155,7 @@ enum RlnError {
     "UnsupportedInExternalSignerMode",
     "FailedVssInit",
     "Internal",
+    "LightningUnsupportedOnMainnet",
 };
 
 dictionary NodeInfo {

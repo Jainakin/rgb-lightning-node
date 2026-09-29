@@ -1208,8 +1208,8 @@ impl RlnWasmSdk {
     }
 
     #[wasm_bindgen(js_name = reconnectManagerOnResume)]
-    pub fn reconnect_manager_on_resume(&self, node: &RlnWasmNode) {
-        node.reconnect_manager_on_resume();
+    pub fn reconnect_manager_on_resume(&self, node: &RlnWasmNode) -> Result<(), JsValue> {
+        node.reconnect_manager_on_resume()
     }
 
     #[wasm_bindgen(js_name = autoDriveStartValue)]
@@ -1889,8 +1889,8 @@ impl RlnWasmSdkNodeHandle {
     }
 
     #[wasm_bindgen(js_name = reconnectManagerOnResume)]
-    pub fn reconnect_manager_on_resume(&self) {
-        self.inner.reconnect_manager_on_resume();
+    pub fn reconnect_manager_on_resume(&self) -> Result<(), JsValue> {
+        self.inner.reconnect_manager_on_resume()
     }
 
     #[wasm_bindgen(js_name = listPeersValue)]
@@ -3146,6 +3146,7 @@ impl RlnWasmWallet {
         // taproot channels), so this conversion is lossless for everything LDK
         // emits in `FundingGenerationReady`.
         let bitcoin_network = self.wallet_ref()?.get_wallet_data().bitcoin_network;
+        crate::check_lightning_supported(crate::ln_node::rgb_network_label(bitcoin_network))?;
         let network = match bitcoin_network {
             rgb_lib_wasm::BitcoinNetwork::Mainnet => lightning::bitcoin::Network::Bitcoin,
             rgb_lib_wasm::BitcoinNetwork::Testnet => lightning::bitcoin::Network::Testnet,

@@ -49,6 +49,12 @@ A small set of namespace-level helpers (`rln_uniffi_healthcheck`,
 `rln_uniffi_is_initialized`, `rln_sdk_initialize`, `rln_sdk_shutdown`) mirror
 the global-singleton path used by some UniFFI clients.
 
+When the node is configured for mainnet, Lightning operations return a failed
+`CResultString` whose error is prefixed with `Rln(LightningUnsupportedOnMainnet):` and
+contains: "RLN on mainnet currently supports only on-chain methods. Lightning APIs
+are not supported." On-chain and shared administrative APIs retain their existing
+requirements. See the [native SDK availability documentation](../../src/uniffi_api/README.md#mainnet-api-availability).
+
 ## Memory ownership
 
 - Strings returned in the `inner` field of `CResultString` are heap-allocated

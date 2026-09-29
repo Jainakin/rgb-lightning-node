@@ -25,6 +25,21 @@ Native external signer note:
 - Usage guide:
   - `src/uniffi_api/native-external-signer.md`
 
+## Mainnet API availability
+
+For a node configured for mainnet, Lightning channel/peer operations, invoices
+(including decoding and HODL invoices), payments, async payments, swaps, and onion
+messages return `RlnError::LightningUnsupportedOnMainnet` with the message:
+
+> RLN on mainnet currently supports only on-chain methods. Lightning APIs are not supported.
+
+The same guard covers `SdkNode` methods and the global `sdk_*` compatibility functions,
+and propagates through the C ABI used by Node.js/Bare integrations. It runs before
+Lightning execution, including while locked; binding argument conversion still applies.
+Bitcoin/RGB on-chain methods (including `rgbinvoice`, `decode_rgb_invoice`, asset linking,
+and transfers) and shared administration/identity methods keep their existing requirements.
+Supported non-mainnet networks retain their existing behavior.
+
 ## Dependency layering
 
 Current internal layering is:

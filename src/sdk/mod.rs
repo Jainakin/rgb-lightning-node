@@ -1218,6 +1218,7 @@ pub(crate) async fn async_order_new(
     state: Arc<AppState>,
     request: AsyncOrderNewRequest,
 ) -> Result<AsyncOrderNewResponse, APIError> {
+    state.check_lightning_supported()?;
     let guard = check_unlocked(&state).await?;
     let unlocked_state = Arc::clone(guard.as_ref().unwrap());
     drop(guard);
@@ -1324,6 +1325,7 @@ pub(crate) async fn async_order_outbound_invoice(
     state: Arc<AppState>,
     request: AsyncOrderOutboundInvoiceRequest,
 ) -> Result<AsyncOrderOutboundInvoiceResponse, APIError> {
+    state.check_lightning_supported()?;
     let guard = check_unlocked(&state).await?;
     let unlocked_state = Arc::clone(guard.as_ref().unwrap());
     drop(guard);
@@ -1481,6 +1483,7 @@ pub(crate) async fn get_channel_id(
     state: Arc<AppState>,
     temporary_channel_id: String,
 ) -> Result<ChannelIdData, APIError> {
+    state.check_lightning_supported()?;
     let tmp_chan_id = check_channel_id(&temporary_channel_id)?;
     let channel_ids = check_unlocked(&state).await?.clone().unwrap().channel_ids();
     let channel_id = channel_ids
@@ -1492,6 +1495,7 @@ pub(crate) async fn get_channel_id(
 }
 
 pub(crate) async fn list_channels(state: Arc<AppState>) -> Result<Vec<ChannelData>, APIError> {
+    state.check_lightning_supported()?;
     let guard = check_unlocked(&state).await?;
     let unlocked_state = guard.as_ref().unwrap();
 
@@ -1579,6 +1583,7 @@ pub(crate) async fn list_channels(state: Arc<AppState>) -> Result<Vec<ChannelDat
 }
 
 pub(crate) async fn list_peers(state: Arc<AppState>) -> Result<Vec<PeerData>, APIError> {
+    state.check_lightning_supported()?;
     let guard = check_unlocked(&state).await?;
     let unlocked_state = guard.as_ref().unwrap();
 
@@ -2229,6 +2234,7 @@ pub(crate) async fn connect_peer(
     state: Arc<AppState>,
     peer_pubkey_and_addr: String,
 ) -> Result<(), APIError> {
+    state.check_lightning_supported()?;
     let guard = check_unlocked(&state).await?;
     let unlocked_state = guard.as_ref().unwrap();
 
@@ -2253,6 +2259,7 @@ pub(crate) async fn disconnect_peer(
     state: Arc<AppState>,
     request: DisconnectPeerRequestData,
 ) -> Result<(), APIError> {
+    state.check_lightning_supported()?;
     let guard = check_unlocked(&state).await?;
     let unlocked_state = guard.as_ref().unwrap();
 
@@ -2289,6 +2296,7 @@ pub(crate) async fn close_channel(
     state: Arc<AppState>,
     request: CloseChannelRequestData,
 ) -> Result<(), APIError> {
+    state.check_lightning_supported()?;
     let guard = check_unlocked(&state).await?;
     let unlocked_state = guard.as_ref().unwrap();
 
@@ -2644,6 +2652,7 @@ pub(crate) async fn keysend(
     state: Arc<AppState>,
     request: KeysendRequestData,
 ) -> Result<KeysendData, APIError> {
+    state.check_lightning_supported()?;
     let guard = check_unlocked(&state).await?;
     let unlocked_state = guard.as_ref().unwrap();
 
@@ -2855,6 +2864,7 @@ pub(crate) async fn open_channel(
     state: Arc<AppState>,
     request: OpenChannelRequestData,
 ) -> Result<OpenChannelData, APIError> {
+    state.check_lightning_supported()?;
     let guard = check_unlocked(&state).await?;
     let unlocked_state = guard.as_ref().unwrap();
 
@@ -3199,6 +3209,7 @@ pub(crate) async fn send_payment(
     state: Arc<AppState>,
     request: SendPaymentRequestData,
 ) -> Result<SendPaymentData, APIError> {
+    state.check_lightning_supported()?;
     let guard = check_unlocked(&state).await?;
     let unlocked_state = guard.as_ref().unwrap();
 
@@ -3494,6 +3505,7 @@ pub(crate) async fn maker_execute(
     state: Arc<AppState>,
     request: MakerExecuteRequestData,
 ) -> Result<(), APIError> {
+    state.check_lightning_supported()?;
     let guard = check_unlocked(&state).await?;
     let unlocked_state = guard.as_ref().unwrap();
 
@@ -3692,6 +3704,7 @@ pub(crate) async fn maker_init(
     state: Arc<AppState>,
     request: MakerInitRequestData,
 ) -> Result<MakerInitData, APIError> {
+    state.check_lightning_supported()?;
     let guard = check_unlocked(&state).await?;
     let unlocked_state = guard.as_ref().unwrap();
 
@@ -3756,6 +3769,7 @@ pub(crate) async fn maker_init(
 }
 
 pub(crate) async fn taker(state: Arc<AppState>, request: TakerRequestData) -> Result<(), APIError> {
+    state.check_lightning_supported()?;
     let guard = check_unlocked(&state).await?;
     let unlocked_state = guard.as_ref().unwrap();
     let swapstring = SwapString::from_str(&request.swapstring)
@@ -3785,6 +3799,7 @@ pub(crate) async fn send_onion_message(
     state: Arc<AppState>,
     request: SendOnionMessageRequestData,
 ) -> Result<(), APIError> {
+    state.check_lightning_supported()?;
     let guard = check_unlocked(&state).await?;
     let unlocked_state = guard.as_ref().unwrap();
 
@@ -3845,6 +3860,7 @@ pub(crate) async fn decode_ln_invoice(
     state: Arc<AppState>,
     invoice: String,
 ) -> Result<DecodeLnInvoiceData, APIError> {
+    state.check_lightning_supported()?;
     let _guard = state.get_unlocked_app_state();
     let invoice =
         Bolt11Invoice::from_str(&invoice).map_err(|e| APIError::InvalidInvoice(e.to_string()))?;
@@ -3896,6 +3912,7 @@ pub(crate) async fn invoice_status(
     state: Arc<AppState>,
     invoice: String,
 ) -> Result<InvoiceStatusData, APIError> {
+    state.check_lightning_supported()?;
     let guard = check_unlocked(&state).await?;
     let unlocked_state = guard.as_ref().unwrap();
 
@@ -3937,6 +3954,7 @@ pub(crate) async fn create_ln_invoice(
     description_hash: Option<String>,
     min_final_cltv_expiry_delta: Option<u16>,
 ) -> Result<LnInvoiceData, APIError> {
+    state.check_lightning_supported()?;
     let guard = check_unlocked(&state).await?;
     let unlocked_state = guard.as_ref().unwrap();
 
@@ -4039,6 +4057,7 @@ fn payment_type_from_invoice(invoice_type: Option<InvoiceType>) -> PaymentType {
 }
 
 pub(crate) async fn list_payments(state: Arc<AppState>) -> Result<Vec<PaymentData>, APIError> {
+    state.check_lightning_supported()?;
     let guard = check_unlocked(&state).await?;
     let unlocked_state = guard.as_ref().unwrap();
 
@@ -4105,6 +4124,7 @@ pub(crate) async fn get_payment(
     payment_hash_hex: String,
     payment_type: PaymentType,
 ) -> Result<PaymentData, APIError> {
+    state.check_lightning_supported()?;
     let guard = check_unlocked(&state).await?;
     let unlocked_state = guard.as_ref().unwrap();
 
@@ -4183,6 +4203,7 @@ pub(crate) async fn cancel_hodl_invoice(
     state: Arc<AppState>,
     request: CancelHodlInvoiceRequestData,
 ) -> Result<(), APIError> {
+    state.check_lightning_supported()?;
     let guard = check_unlocked(&state).await?;
     let unlocked_state = guard.as_ref().unwrap();
 
@@ -4212,6 +4233,7 @@ pub(crate) async fn claim_hodl_invoice(
     state: Arc<AppState>,
     request: ClaimHodlInvoiceRequestData,
 ) -> Result<ClaimHodlInvoiceResponseData, APIError> {
+    state.check_lightning_supported()?;
     let guard = check_unlocked(&state).await?;
     let unlocked_state = guard.as_ref().unwrap();
 
@@ -4357,6 +4379,7 @@ pub(crate) async fn get_swap(
     payment_hash_hex: String,
     taker: bool,
 ) -> Result<SwapViewData, APIError> {
+    state.check_lightning_supported()?;
     let guard = check_unlocked(&state).await?;
     let unlocked_state = guard.as_ref().unwrap();
 
@@ -4382,6 +4405,7 @@ pub(crate) async fn get_swap(
 }
 
 pub(crate) async fn list_swaps(state: Arc<AppState>) -> Result<SwapListData, APIError> {
+    state.check_lightning_supported()?;
     let guard = check_unlocked(&state).await?;
     let unlocked_state = guard.as_ref().unwrap();
 

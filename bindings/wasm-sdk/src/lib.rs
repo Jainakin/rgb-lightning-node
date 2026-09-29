@@ -174,6 +174,15 @@ thread_local! {
 const MEDIA_STORAGE_PREFIX: &str = "rln:wasm:media:";
 const WALLET_RGB_PROXY_STORAGE_PREFIX: &str = "rln:wasm:wallet-rgb-proxy:";
 
+pub(crate) const LIGHTNING_UNSUPPORTED_ON_MAINNET: &str = "LightningUnsupportedOnMainnet: RLN on mainnet currently supports only on-chain methods. Lightning APIs are not supported.";
+
+pub(crate) fn check_lightning_supported(network: &str) -> Result<(), JsValue> {
+    if network == "mainnet" {
+        return Err(JsValue::from_str(LIGHTNING_UNSUPPORTED_ON_MAINNET));
+    }
+    Ok(())
+}
+
 pub(crate) fn ensure_sdk_node_runtime_allowed() -> Result<(), JsValue> {
     WASM_SDK_LIFECYCLE_STATE.with(|state| {
         let state = state.borrow();

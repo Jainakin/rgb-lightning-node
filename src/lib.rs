@@ -42,6 +42,8 @@ mod gossip;
 mod kv_store;
 mod ldk;
 mod ldk_chain_backend;
+#[cfg(test)]
+mod mainnet_tests;
 mod node;
 mod rgb;
 mod rgb_file_transfer;
