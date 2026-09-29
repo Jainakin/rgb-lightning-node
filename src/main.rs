@@ -30,6 +30,7 @@ mod ldk;
 mod ldk_chain_backend;
 mod rgb;
 mod rgb_file_transfer;
+mod rgb_import;
 mod routes;
 mod runtime;
 mod signer;
@@ -77,6 +78,7 @@ use crate::auth::conditional_auth_middleware;
 use crate::error::AppError;
 use crate::ldk::stop_ldk;
 use crate::rgb_file_transfer::MAX_CONSIGNMENT_SIZE;
+use crate::rgb_import::MAX_RGB_IMPORT_BODY_BYTES;
 #[cfg(feature = "remote-signer")]
 use crate::routes::init_external_signer;
 use crate::routes::{
@@ -85,13 +87,13 @@ use crate::routes::{
     check_indexer_url, check_proxy_endpoint, claim_hodl_invoice, close_channel, connect_peer,
     create_utxos, decode_ln_invoice, decode_rgb_invoice, decode_swapstring, disconnect_peer,
     estimate_fee, fail_transfers, get_asset_media, get_channel_id, get_consignment, get_payment,
-    get_swap, inflate, init, invoice_status, issue_asset_cfa, issue_asset_ifa, issue_asset_nia,
-    issue_asset_uda, keysend, list_assets, list_channels, list_payments, list_peers, list_swaps,
-    list_transactions, list_transfers, list_unspents, ln_invoice, lock, maker_execute, maker_init,
-    network_info, node_info, open_channel, post_asset_media, provide_out_of_band_ack,
-    provide_out_of_band_consignment, refresh_transfers, restore, revoke_token, rgb_invoice,
-    rotate_address, send_btc, send_onion_message, send_payment, send_rgb, shutdown, sign_message,
-    sync, taker, unlock,
+    get_swap, import_rgb_contract, import_rgb_transfer_consignment, inflate, init, invoice_status,
+    issue_asset_cfa, issue_asset_ifa, issue_asset_nia, issue_asset_uda, keysend, list_assets,
+    list_channels, list_payments, list_peers, list_swaps, list_transactions, list_transfers,
+    list_unspents, ln_invoice, lock, maker_execute, maker_init, network_info, node_info,
+    open_channel, post_asset_media, provide_out_of_band_ack, provide_out_of_band_consignment,
+    refresh_transfers, restore, revoke_token, rgb_invoice, rotate_address, send_btc,
+    send_onion_message, send_payment, send_rgb, shutdown, sign_message, sync, taker, unlock,
 };
 #[cfg(feature = "vss")]
 use crate::routes::{vss_backup, vss_backup_info, vss_clear_fence};
@@ -207,6 +209,15 @@ pub(crate) async fn app(args: UserArgs) -> Result<(Router, Arc<AppState>), AppEr
         .route("/getconsignment", post(get_consignment))
         .route("/getpayment", post(get_payment))
         .route("/getswap", post(get_swap))
+        .route(
+            "/importrgbtransferconsignment",
+            post(import_rgb_transfer_consignment)
+                .layer(RequestBodyLimitLayer::new(MAX_RGB_IMPORT_BODY_BYTES)),
+        )
+        .route(
+            "/importrgbcontract",
+            post(import_rgb_contract).layer(RequestBodyLimitLayer::new(MAX_RGB_IMPORT_BODY_BYTES)),
+        )
         .route("/inflate", post(inflate))
         .route("/init", post(init))
         .route("/invoicestatus", post(invoice_status))

@@ -221,6 +221,12 @@ pub enum APIError {
     #[error("Invalid invoice: {0}")]
     InvalidInvoice(String),
 
+    #[error("Invalid RGB consignment: {0}")]
+    InvalidRgbConsignment(String),
+
+    #[error("Invalid RGB contract: {0}")]
+    InvalidRgbContract(String),
+
     #[error("Invalid media digest")]
     InvalidMediaDigest,
 
@@ -596,6 +602,8 @@ impl IntoResponse for APIError {
             | APIError::InvalidExpiration
             | APIError::InvalidFeeRate(_)
             | APIError::InvalidInvoice(_)
+            | APIError::InvalidRgbContract(_)
+            | APIError::InvalidRgbConsignment(_)
             | APIError::InvalidMediaDigest
             | APIError::InvalidMnemonic(_)
             | APIError::InvalidName(_)
