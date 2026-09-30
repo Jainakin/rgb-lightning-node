@@ -58,6 +58,8 @@ pub enum RlnError {
     Internal(String),
     #[error("{0}")]
     LightningUnsupportedOnMainnet(String),
+    #[error("{0}")]
+    MainnetLightningState(String),
 }
 
 impl RlnError {

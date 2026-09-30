@@ -33,7 +33,7 @@ use std::path::PathBuf;
 use std::str::FromStr;
 use std::sync::{Arc, Mutex, MutexGuard};
 
-use crate::{error::APIError, utils::UnlockedAppState};
+use crate::{error::APIError, utils::CommonState};
 
 /// When `sign_rgb_psbt` fails, internal mode falls back to the local RGB wallet; external mode does not.
 fn resolve_rgb_psbt_signer_failure(
@@ -112,7 +112,7 @@ pub(crate) fn rgb_signer_descriptors_for_psbt_with_context(
     Ok(descriptors)
 }
 
-impl UnlockedAppState {
+impl CommonState {
     fn rgb_signer_descriptors_for_psbt(
         &self,
         unsigned_psbt: &str,

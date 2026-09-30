@@ -28,11 +28,36 @@ native SDK/bindings return the corresponding typed error. The configured node ne
 controls this restriction, even while the node is locked. REST authentication and request
 extraction still apply first; SDK argument conversion still applies before SDK execution.
 
-Bitcoin/RGB on-chain APIs, including RGB invoices, transfers and asset linking, remain
-available under their existing requirements. Shared administration, node/network info,
-and node-identity message signing/verification retain their existing behavior.
-Lightning APIs on supported non-mainnet networks are unchanged. Startup, background
-services, and wallet/signing policies are unchanged.
+Mainnet unlock starts the Bitcoin/RGB wallet, identity, signer and configured wallet
+backup services without constructing the Lightning runtime. It does not start Lightning
+chain synchronization, peer listeners, reconnect, gossip, event processing or sweeping.
+The peer port is unused. The existing required `ldk_chain_sync` request field remains
+accepted for compatibility; its backend and gossip settings are unused on mainnet.
+The RGB wallet still requires a valid mainnet indexer and its existing proxy configuration.
+
+After unlock, Bitcoin/RGB on-chain APIs, including RGB invoices and transfers, remain
+available under their existing requirements. Node identity and message signing retain
+the same keys. `nodeinfo` reports zero active Lightning counts and balances and a null
+RGS timestamp; these values are not wallet BTC balances. Mainnet `networkinfo` reads the
+wallet indexer's current height on demand and returns an error if it cannot be read or
+the indexer is on another network. Non-mainnet `networkinfo` continues to use LDK's height.
+Lightning and wallet/signing policies on supported non-mainnet networks are unchanged.
+
+An existing mainnet wallet with persisted Lightning state returns HTTP 409
+`MainnetLightningState` during unlock, with a message beginning:
+
+> Existing Lightning state requires recovery review before starting this mainnet wallet without Lightning:
+
+This check is conservative: even empty channel-manager or sweeper snapshots from an
+earlier on-chain-only installation require review. It also checks local pending
+replication, peer history and the configured remote Lightning store. RLN preserves
+these records and does not start LDK to inspect them. Do not delete records or clear
+remote stores to bypass the check. An operator must review any channel, funding or
+sweep obligations and arrange recovery with a release that can monitor them before
+upgrading that wallet. Refusing unlock does not keep existing channels monitored.
+Fresh mainnet wallets and wallets previously unlocked by this implementation can
+unlock normally. RGB VSS restore and backup continue using the existing wallet store;
+mainnet does not restore or replicate Lightning snapshots.
 
 Please be careful, this software is early alpha, we do not take any
 responsibility for loss of funds or any other issue you may encounter.
@@ -103,7 +128,7 @@ cargo install --locked --path . --no-default-features --features transaction-syn
 ## Run
 
 In order to operate, the node will need:
-- a bitcoind node (only for the `BlockSync` [sync mode](#sync-modes))
+- a bitcoind node (only for non-mainnet `BlockSync` [sync mode](#sync-modes))
 - an indexer instance for RGB (electrum or esplora — forwarded to rgb-lib)
 
 Once services are running, daemons can be started.

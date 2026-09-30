@@ -162,6 +162,7 @@ enum RlnError {
     "FailedVssInit",
     "Internal",
     "LightningUnsupportedOnMainnet",
+    "MainnetLightningState",
 };
 
 dictionary NodeInfo {

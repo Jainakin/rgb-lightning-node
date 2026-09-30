@@ -38,7 +38,18 @@ and propagates through the C ABI used by Node.js/Bare integrations. It runs befo
 Lightning execution, including while locked; binding argument conversion still applies.
 Bitcoin/RGB on-chain methods (including `rgbinvoice`, `decode_rgb_invoice`, asset linking,
 and transfers) and shared administration/identity methods keep their existing requirements.
-Supported non-mainnet networks retain their existing behavior.
+Mainnet unlock initializes the wallet and signer without the Lightning runtime. This
+applies to internal, attached-external and native-external signer entry points. The
+required `ldk_chain_sync` payload is retained but its backend is unused on mainnet.
+`node_info` reports zero active Lightning values and no RGS timestamp; `network_info`
+queries the wallet indexer on demand and can fail if that indexer is unavailable.
+Identity, signing and configured RGB VSS backup keep their existing keys and stores.
+
+Persisted mainnet Lightning state causes `RlnError::MainnetLightningState` during unlock.
+The appended error variant preserves existing error ordinals. This includes opaque
+empty snapshots from older on-chain-only wallets; no state is deleted or resumed.
+See [mainnet startup and recovery requirements](../../README.md) before upgrading an
+existing wallet. Supported non-mainnet networks retain their existing behavior.
 
 ## Dependency layering
 
@@ -51,7 +62,7 @@ Important notes:
 
 - UniFFI does not call HTTP route handlers; it calls SDK methods directly.
 - SDK is expected to depend on LDK core logic (it is a wrapper, not a separate node implementation).
-- `ldk::start_ldk` now accepts `core_types::UnlockRequest` and SDK unlock uses `sdk::UnlockRequest`, so unlock flow is not typed against route-layer DTOs.
+- `ldk::start_node` accepts `core_types::UnlockRequest` and SDK unlock uses `sdk::UnlockRequest`, so unlock flow is not typed against route-layer DTOs.
 - A small `routes` diff remains for shared `AppState` transition helpers (`pub(crate)` visibility), used by SDK unlock lifecycle handling.
 
 ## E2E and parity harnesses

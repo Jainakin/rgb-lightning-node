@@ -352,7 +352,7 @@ impl SyncedKvStore {
 
         if !force {
             // Guard: refuse to clobber an already-populated local store.
-            // The caller in `start_ldk` also performs this check, but a
+            // The non-mainnet startup path also performs this check, but a
             // belt-and-suspenders guard makes this API hard to misuse.
             use lightning::util::persist::{
                 CHANNEL_MANAGER_PERSISTENCE_KEY, CHANNEL_MANAGER_PERSISTENCE_PRIMARY_NAMESPACE,
@@ -455,6 +455,11 @@ impl SyncedKvStore {
     ) -> Result<(), io::Error> {
         self.local
             .remove(primary_namespace, secondary_namespace, key, false)
+    }
+
+    #[cfg(feature = "vss")]
+    pub(crate) fn has_remote(&self) -> bool {
+        self.remote.is_some()
     }
 
     /// Returns the number of pending VSS-replication entries that failed and
