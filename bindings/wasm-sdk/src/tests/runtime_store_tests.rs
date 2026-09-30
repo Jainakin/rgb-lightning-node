@@ -23,3 +23,37 @@ fn hydrate_prefixes_cover_runtime_state_domains() {
         );
     }
 }
+
+#[cfg(target_arch = "wasm32")]
+#[wasm_bindgen_test::wasm_bindgen_test(async)]
+async fn mainnet_preflight_hydrates_indexeddb_only_kv_and_retains_legacy_state() {
+    use super::*;
+    let scope = "ws://mainnet-idb-recovery.invalid#runtime:identity";
+    let keys = crate::wasm_node_persistence::RuntimeScopeKeys::from_runtime_scope_key(scope.into());
+    let key = format!(
+        "rln:ldk-kv:{}:monitors:monitor_updates:pending",
+        keys.ldk_manager_registry_key
+    );
+    let storage = web_sys::window().unwrap().local_storage().unwrap().unwrap();
+    indexed_db_set_item(&key, "preserve-remote-format-bytes")
+        .await
+        .unwrap();
+    storage.remove_item(&key).unwrap();
+    reset_preload_readiness_for_tests();
+    preload_runtime_state_from_persistent_store().await.unwrap();
+    assert_eq!(
+        storage.get_item(&key).unwrap().as_deref(),
+        Some("preserve-remote-format-bytes")
+    );
+    assert!(check_mainnet_runtime_state(&keys)
+        .unwrap_err()
+        .as_string()
+        .unwrap()
+        .starts_with("MainnetLightningState:"));
+    assert_eq!(
+        storage.get_item(&key).unwrap().as_deref(),
+        Some("preserve-remote-format-bytes")
+    );
+    indexed_db_delete_item(&key).await.unwrap();
+    storage.remove_item(&key).unwrap();
+}

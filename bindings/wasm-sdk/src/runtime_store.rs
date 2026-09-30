@@ -40,6 +40,8 @@ pub(crate) fn browser_persistent_state_store() -> BrowserPersistentStateStore {
 }
 
 pub(crate) const RUNTIME_STATE_HYDRATE_PREFIXES: &[&str] = &[
+    "rln:ldk-kv:",
+    "rln:wasm:ldk-sweeps:",
     crate::wasm_node_persistence::WASM_LDK_RUNTIME_STORAGE_PREFIX,
     "rln:wasm:swap-runtime:",
     "rln:wasm:media:",
@@ -82,13 +84,64 @@ async fn hydrate_local_storage_from_indexed_db_prefixes(prefixes: &[&str]) -> Re
             continue;
         };
         if prefixes.iter().any(|prefix| key.starts_with(prefix)) {
-            let _ = local_storage_set_item(&key, &value);
+            local_storage_set_item(&key, &value)?;
         }
     }
 
     RUNTIME_STATE_PRELOADED.with(|loaded| {
         *loaded.borrow_mut() = true;
     });
+    Ok(())
+}
+
+/// Conservative, read-only preflight. Synchronous node constructors can inspect durable
+/// state only after the caller has completed the existing asynchronous hydration step.
+pub(crate) fn check_mainnet_runtime_state(
+    keys: &crate::wasm_node_persistence::RuntimeScopeKeys,
+) -> Result<(), JsValue> {
+    #[cfg(target_arch = "wasm32")]
+    {
+        if !RUNTIME_STATE_PRELOADED.with(|loaded| *loaded.borrow()) {
+            return Err(JsValue::from_str(
+                "Mainnet node initialization requires await sdk.preloadPersistentRuntimeState() before construction or wallet attachment",
+            ));
+        }
+        let storage = web_sys::window()
+            .ok_or_else(|| JsValue::from_str("browser window unavailable"))?
+            .local_storage()?
+            .ok_or_else(|| {
+                JsValue::from_str("localStorage unavailable for mainnet recovery review")
+            })?;
+        let runtime = &keys.ldk_manager_registry_key;
+        let protected = [
+            keys.ldk_runtime_committed_storage_key.clone(),
+            keys.native_ln_runtime_core_storage_base.clone(),
+            keys.chain_sync_storage_key.clone(),
+            keys.runtime_events_storage_key.clone(),
+            keys.rgb_ln_transfers_storage_key.clone(),
+            keys.peer_sessions_storage_key.clone(),
+            format!("rln:wasm:ldk-broadcast-queue:{runtime}"),
+            format!("rln:wasm:ldk-monitors:{runtime}"),
+            format!("rln:wasm:ldk-sweeps:{runtime}"),
+            format!("rln:ldk-kv:{runtime}"),
+        ];
+        for index in 0..storage.length()? {
+            if let Some(key) = storage.key(index)? {
+                if protected.iter().any(|prefix| {
+                    key == *prefix
+                        || key
+                            .strip_prefix(prefix.as_str())
+                            .is_some_and(|suffix| suffix.starts_with(':'))
+                }) {
+                    return Err(JsValue::from_str(
+                        "MainnetLightningState: Existing Lightning state requires recovery review before starting this mainnet wallet without Lightning: protected browser runtime state is present",
+                    ));
+                }
+            }
+        }
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    let _ = keys;
     Ok(())
 }
 
@@ -282,4 +335,9 @@ async fn indexed_db_delete_item(key: &str) -> Result<(), JsValue> {
     let promise = __rln_runtime_idb_delete(key);
     let _ = JsFuture::from(promise).await?;
     Ok(())
+}
+
+#[cfg(all(test, target_arch = "wasm32"))]
+pub(crate) fn reset_preload_readiness_for_tests() {
+    RUNTIME_STATE_PRELOADED.with(|loaded| *loaded.borrow_mut() = false);
 }

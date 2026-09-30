@@ -126,12 +126,12 @@ fn virtual_channels_v0_enabled(runtime_key: &str) -> bool {
 //
 //   1. Explicit selection — `RlnWasmNode.newWithNodeRuntimeId(proxy, rid, network)` parses the
 //      network (`"mainnet" | "testnet" | "testnet4" | "signet" | "regtest"`) and calls
-//      `set_network_for_runtime` at construction, before the object graph exists. `attachWallet` then
+//      `set_network_for_runtime` during supported-network runtime preparation. `attachWallet` then
 //      validates the wallet's network against it and rejects a mismatch.
 //   2. Adopt-from-wallet — the bare `RlnWasmNode::new` / SDK-facade path leaves the node unconfigured;
 //      `attach_wallet_shared` reads the attached wallet's network
-//      (`get_wallet_data().bitcoin_network`), maps it via `rgb_network_to_bitcoin_network`, and calls
-//      `set_network_for_runtime` (still before the object graph is built).
+//      (`get_wallet_data().bitcoin_network`). The first Lightning initialization registers that
+//      network through `set_network_for_runtime`, before building the graph. Mainnet stays cold.
 //
 // Consequences:
 //   - The network is captured at object-graph build time and cannot change afterward (a
@@ -155,11 +155,17 @@ thread_local! {
 /// Record the Bitcoin network for a given LDK runtime key.
 ///
 /// Must be called before the LDK object graph is first built for that runtime (done automatically
-/// from `attach_wallet_shared`, whose wallet carries the configured network).
+/// during node runtime preparation, using the configured or adopted wallet network).
 pub fn set_network_for_runtime(runtime_key: &str, network: bitcoin::Network) {
     NETWORK_REGISTRY.with(|reg| {
         reg.borrow_mut().insert(runtime_key.to_string(), network);
     });
+}
+
+pub(crate) fn unregister_node_runtime(runtime_key: &str) {
+    RGB_WALLET_REGISTRY.with(|registry| registry.borrow_mut().remove(runtime_key));
+    NETWORK_REGISTRY.with(|registry| registry.borrow_mut().remove(runtime_key));
+    VIRTUAL_CHANNELS_V0_REGISTRY.with(|registry| registry.borrow_mut().remove(runtime_key));
 }
 
 /// The Bitcoin network registered for a given LDK runtime key.
@@ -1482,7 +1488,13 @@ impl WasmLdkLiveBackend {
         if self.object_graph.borrow().is_some() {
             return Ok(());
         }
+
+        #[cfg(test)]
+        crate::ln_node::test_utils::record_startup_call("live_graph");
         let network = network_for_runtime(&self.runtime_key);
+        if network == bitcoin::Network::Bitcoin {
+            return crate::check_lightning_supported("mainnet");
+        }
         let seed = self.derive_seed32();
         let logger = Arc::new(WasmLdkLogger);
         let fee_estimator = Arc::new(FixedFeeEstimator);
