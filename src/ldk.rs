@@ -2083,9 +2083,10 @@ async fn handle_ldk_events(
                     let channel_rgb_amount = rgb_info.local_rgb_amount + rgb_info.remote_rgb_amount;
                     let asset_id = rgb_info.contract_id.to_string();
                     let assignment = match rgb_info.schema {
-                        AssetSchema::Nia | AssetSchema::Cfa | AssetSchema::Ifa => {
-                            Assignment::Fungible(channel_rgb_amount)
-                        }
+                        AssetSchema::Nia
+                        | AssetSchema::Cfa
+                        | AssetSchema::Ifa
+                        | AssetSchema::Bfa => Assignment::Fungible(channel_rgb_amount),
                         AssetSchema::Uda => Assignment::NonFungible,
                     };
                     let recipient_id =
@@ -2380,7 +2381,7 @@ async fn handle_ldk_events(
                 let channel_rgb_amount = rgb_info.local_rgb_amount + rgb_info.remote_rgb_amount;
                 let asset_id = rgb_info.contract_id.to_string();
                 let assignment = match rgb_info.schema {
-                    AssetSchema::Nia | AssetSchema::Cfa | AssetSchema::Ifa => {
+                    AssetSchema::Nia | AssetSchema::Cfa | AssetSchema::Ifa | AssetSchema::Bfa => {
                         Assignment::Fungible(channel_rgb_amount)
                     }
                     AssetSchema::Uda => Assignment::NonFungible,
@@ -4360,10 +4361,16 @@ pub(crate) async fn maybe_restore_rgb_from_vss(
 }
 
 // rgb-lib rejects wallets supporting IFA on mainnet
-fn supported_asset_schemas(bitcoin_network: BitcoinNetwork) -> Vec<AssetSchema> {
+// BFA is opt-in: rgb-lib refuses to go online for a BFA-capable wallet without an Ethereum RPC
+// endpoint (it validates incoming BFA consignments against the bridge contract's FundsIn logs),
+// so the schema is only enabled when one is configured.
+fn supported_asset_schemas(bitcoin_network: BitcoinNetwork, bfa: bool) -> Vec<AssetSchema> {
     let mut schemas = vec![AssetSchema::Nia, AssetSchema::Cfa, AssetSchema::Uda];
     if bitcoin_network != BitcoinNetwork::Mainnet {
         schemas.push(AssetSchema::Ifa);
+    }
+    if bfa {
+        schemas.push(AssetSchema::Bfa);
     }
     schemas
 }
@@ -5424,6 +5431,10 @@ pub(crate) async fn start_ldk(
     };
     let reuse_addresses = static_state.reuse_addresses;
     let indexer_url_owned = indexer_url.to_string();
+    let eth_rpc_url = unlock_request
+        .eth_rpc_url
+        .clone()
+        .or_else(|| static_state.config.chain.eth_rpc_url.clone());
     #[cfg(feature = "vss")]
     let rgb_vss_backup = match (&static_state.vss_url, &vss_identity) {
         (Some(vss_url), Some(identity)) => Some((
@@ -5442,7 +5453,7 @@ pub(crate) async fn start_ldk(
                 bitcoin_network,
                 database_type: DatabaseType::Sqlite,
                 max_allocations_per_utxo: 1,
-                supported_schemas: supported_asset_schemas(bitcoin_network),
+                supported_schemas: supported_asset_schemas(bitcoin_network, eth_rpc_url.is_some()),
                 reuse_addresses,
             },
             keys,
@@ -5452,6 +5463,7 @@ pub(crate) async fn start_ldk(
             indexer_url: indexer_url_owned,
             skip_consistency_check: false,
             vanilla_sync_lookback: 20,
+            eth_rpc_url,
         })?;
         #[cfg(feature = "vss")]
         if let Some((vss_url, rgb_store_id, signing_key)) = rgb_vss_backup {
@@ -7105,7 +7117,9 @@ mod tests {
 
     #[test]
     fn ifa_supported_on_all_networks_but_mainnet() {
-        assert!(!supported_asset_schemas(BitcoinNetwork::Mainnet).contains(&AssetSchema::Ifa));
+        assert!(
+            !supported_asset_schemas(BitcoinNetwork::Mainnet, false).contains(&AssetSchema::Ifa)
+        );
         for network in [
             BitcoinNetwork::Testnet,
             BitcoinNetwork::Testnet4,
@@ -7113,12 +7127,21 @@ mod tests {
             BitcoinNetwork::SignetCustom,
             BitcoinNetwork::Regtest,
         ] {
-            let schemas = supported_asset_schemas(network);
+            let schemas = supported_asset_schemas(network, false);
             assert!(schemas.contains(&AssetSchema::Ifa));
             assert!(schemas.contains(&AssetSchema::Nia));
             assert!(schemas.contains(&AssetSchema::Cfa));
             assert!(schemas.contains(&AssetSchema::Uda));
         }
+    }
+
+    #[test]
+    fn bfa_supported_only_with_an_eth_rpc_url() {
+        assert!(
+            !supported_asset_schemas(BitcoinNetwork::Regtest, false).contains(&AssetSchema::Bfa)
+        );
+        assert!(supported_asset_schemas(BitcoinNetwork::Regtest, true).contains(&AssetSchema::Bfa));
+        assert!(supported_asset_schemas(BitcoinNetwork::Mainnet, true).contains(&AssetSchema::Bfa));
     }
 
     #[test]

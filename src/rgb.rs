@@ -271,6 +271,23 @@ impl UnlockedAppState {
             .get_send_consignment_path(asset_id, transfer_id)
     }
 
+    pub(crate) fn rgb_burn(
+        &self,
+        asset_id: String,
+        amount: u64,
+        burn_recipient: Option<Vec<u8>>,
+        fee_rate: u64,
+        min_confirmations: u8,
+    ) -> Result<OperationResult, RgbLibError> {
+        self.rgb_wallet_wrapper.burn(
+            asset_id,
+            amount,
+            burn_recipient,
+            fee_rate,
+            min_confirmations,
+        )
+    }
+
     pub(crate) fn rgb_inflate(
         &self,
         asset_id: String,
@@ -784,6 +801,24 @@ impl RgbLibWalletWrapper {
 
     pub(crate) fn get_tx_height(&self, txid: String) -> Result<Option<u32>, RgbLibError> {
         self.get_rgb_wallet().get_tx_height(self.online, txid)
+    }
+
+    pub(crate) fn burn(
+        &self,
+        asset_id: String,
+        amount: u64,
+        burn_recipient: Option<Vec<u8>>,
+        fee_rate: u64,
+        min_confirmations: u8,
+    ) -> Result<OperationResult, RgbLibError> {
+        self.get_rgb_wallet().burn(
+            self.online,
+            asset_id,
+            amount,
+            burn_recipient,
+            fee_rate,
+            min_confirmations,
+        )
     }
 
     pub(crate) fn inflate(

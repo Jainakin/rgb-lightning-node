@@ -497,7 +497,8 @@ paths:
         - RGB
       summary: Get a send consignment
       description: Get the hex string of the consignment bytes for a send transfer,
-        identified by its asset ID and txid. Useful to hand the consignment to
+        identified by its asset ID and txid (it also covers burns, where the
+        consignment is the proof of the burn). Useful to hand the consignment to
         the counterparty out-of-band when the node filesystem is not accessible
         from the API caller.
       requestBody:
@@ -552,6 +553,27 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/GetSwapResponse'
+  /burn:
+    post:
+      tags:
+        - RGB
+      summary: Burn RGB assets
+      description: Burn RGB assets on-chain. For BFA assets a 32-byte burn_recipient
+        (hex) is required, telling where the burned amount is released. The burn
+        consignment, which proves the burn, can then be retrieved with
+        /getconsignment using the asset ID and the returned txid.
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/BurnRequest'
+      responses:
+        '200':
+          description: Successful operation
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BurnResponse'
   /inflate:
     post:
       tags:
@@ -1811,6 +1833,55 @@ components:
           type:
             - string
             - 'null'
+    AssetBFA:
+      type: object
+      required:
+        - asset_id
+        - ticker
+        - name
+        - precision
+        - initial_supply
+        - timestamp
+        - added_at
+        - balance
+      properties:
+        asset_id:
+          type: string
+          example: rgb:CJkb4YZw-jRiz2sk-~PARPio-wtVYI1c-XAEYCqO-wTfvRZ8
+        ticker:
+          type: string
+          example: USDT
+        name:
+          type: string
+          example: Tether
+        details:
+          type:
+            - string
+            - 'null'
+          example: asset details
+        precision:
+          type: integer
+          example: 6
+        initial_supply:
+          type: integer
+          example: 777
+        timestamp:
+          type: integer
+          example: 1691160565
+        added_at:
+          type: integer
+          example: 1691161979
+        balance:
+          $ref: '#/components/schemas/AssetBalanceResponse'
+        media:
+          oneOf:
+            - $ref: '#/components/schemas/Media'
+            - type: 'null'
+        reject_list_url:
+          type:
+            - string
+            - 'null'
+          example: https://some.domain/someasset/rejectlist
     AssetLinkRequest:
       type: object
       required:
@@ -1969,6 +2040,7 @@ components:
         - Uda
         - Cfa
         - Ifa
+        - Bfa
     AssetUDA:
       type: object
       required:
@@ -2015,6 +2087,7 @@ components:
         - $ref: '#/components/schemas/AssignmentNonFungible'
         - $ref: '#/components/schemas/AssignmentInflationRight'
         - $ref: '#/components/schemas/AssignmentAny'
+        - $ref: '#/components/schemas/AssignmentBridgeRight'
       discriminator:
         propertyName: type
         mapping:
@@ -2022,6 +2095,7 @@ components:
           NonFungible: '#/components/schemas/AssignmentNonFungible'
           InflationRight: '#/components/schemas/AssignmentInflationRight'
           Any: '#/components/schemas/AssignmentAny'
+          BridgeRight: '#/components/schemas/AssignmentBridgeRight'
     AssignmentAny:
       type: object
       required:
@@ -2030,6 +2104,14 @@ components:
         type:
           type: string
           enum: [Any]
+    AssignmentBridgeRight:
+      type: object
+      required:
+        - type
+      properties:
+        type:
+          type: string
+          enum: [BridgeRight]
     AssignmentFungible:
       type: object
       required:
@@ -2673,6 +2755,44 @@ components:
       enum:
         - Electrum
         - Esplora
+    BurnRequest:
+      type: object
+      required:
+        - asset_id
+        - amount
+        - fee_rate
+        - min_confirmations
+      properties:
+        asset_id:
+          type: string
+          example: rgb:CJkb4YZw-jRiz2sk-~PARPio-wtVYI1c-XAEYCqO-wTfvRZ8
+        amount:
+          type: integer
+          example: 100
+        burn_recipient:
+          type:
+            - string
+            - 'null'
+          description: Hex-encoded 32-byte recipient of the burned amount, required for BFA assets
+          example: 000000000000000000000000f39fd6e51aad88f6f4ce6ab8827279cfffb92266
+        fee_rate:
+          type: integer
+          example: 5
+        min_confirmations:
+          type: integer
+          example: 1
+    BurnResponse:
+      type: object
+      required:
+        - txid
+        - batch_transfer_idx
+      properties:
+        txid:
+          type: string
+          example: 7c2c95b9c2aa0a7d140495b664de7973b76561de833f0dd84def3efa08941664
+        batch_transfer_idx:
+          type: integer
+          example: 1
     InflateRequest:
       type: object
       required:
@@ -3034,6 +3154,7 @@ components:
         - uda
         - cfa
         - ifa
+        - bfa
       properties:
         nia:
           type:
@@ -3059,6 +3180,12 @@ components:
             - 'null'
           items:
             $ref: '#/components/schemas/AssetIFA'
+        bfa:
+          type:
+            - array
+            - 'null'
+          items:
+            $ref: '#/components/schemas/AssetBFA'
     ListChannelsResponse:
       type: object
       required:
@@ -4429,6 +4556,13 @@ components:
             - string
             - 'null'
           example: 127.0.0.1:50001
+        eth_rpc_url:
+          type:
+            - string
+            - 'null'
+          description: Ethereum RPC used to validate BFA consignments. When set (here
+            or via the config file) the node supports BFA assets, otherwise BFA is disabled
+          example: http://127.0.0.1:8545
         proxy_endpoint:
           type:
             - string

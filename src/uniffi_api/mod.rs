@@ -451,6 +451,7 @@ impl SdkNode {
                 password: request.password,
                 ldk_chain_sync: request.ldk_chain_sync.into(),
                 indexer_url: request.indexer_url,
+                eth_rpc_url: request.eth_rpc_url,
                 proxy_endpoint: request.proxy_endpoint,
                 announce_addresses: request.announce_addresses,
                 announce_alias: request.announce_alias,
@@ -1276,6 +1277,7 @@ impl SdkNode {
                 "uda" => Ok(rgb_lib::AssetSchema::Uda),
                 "cfa" => Ok(rgb_lib::AssetSchema::Cfa),
                 "ifa" => Ok(rgb_lib::AssetSchema::Ifa),
+                "bfa" => Ok(rgb_lib::AssetSchema::Bfa),
                 _ => Err(RlnError::InvalidRequest(format!(
                     "invalid asset schema: {s}"
                 ))),
@@ -1392,7 +1394,36 @@ impl SdkNode {
                     .collect::<Result<Vec<_>, RlnError>>()
             })
             .transpose()?;
-        Ok(ListAssetsResponse { nia, uda, cfa, ifa })
+        let bfa = resp
+            .bfa
+            .map(|v| {
+                v.into_iter()
+                    .map(|a| {
+                        Ok(AssetBfa {
+                            asset_id: ContractId::from_str(&a.asset_id)
+                                .map_err(RlnError::internal)?,
+                            ticker: a.ticker,
+                            name: a.name,
+                            details: a.details,
+                            precision: a.precision,
+                            initial_supply: a.initial_supply,
+                            timestamp: a.timestamp,
+                            added_at: a.added_at,
+                            balance: map_asset_balance(a.balance),
+                            media: a.media.map(map_media),
+                            reject_list_url: a.reject_list_url,
+                        })
+                    })
+                    .collect::<Result<Vec<_>, RlnError>>()
+            })
+            .transpose()?;
+        Ok(ListAssetsResponse {
+            nia,
+            uda,
+            cfa,
+            ifa,
+            bfa,
+        })
     }
 
     pub fn decode_ln_invoice(
@@ -1562,6 +1593,48 @@ impl SdkNode {
         })
     }
 
+    pub fn burn(&self, request: BurnRequest) -> Result<BurnResponse, RlnError> {
+        let state = self.handle.app_state();
+        let response = block_on_sdk(sdk::burn(
+            state,
+            sdk::BurnRequestData {
+                asset_id: request.asset_id.to_string(),
+                amount: request.amount,
+                burn_recipient: request.burn_recipient,
+                fee_rate: request.fee_rate,
+                min_confirmations: request.min_confirmations,
+            },
+        ))?;
+        let txid = Txid::from_str(&response.txid).map_err(RlnError::internal)?;
+        Ok(BurnResponse {
+            txid,
+            batch_transfer_idx: response.batch_transfer_idx,
+        })
+    }
+
+    pub fn get_consignment_path(
+        &self,
+        asset_id: ContractId,
+        txid: Txid,
+    ) -> Result<String, RlnError> {
+        let state = self.handle.app_state();
+        let path = block_on_sdk(sdk::get_consignment_path(
+            state,
+            asset_id.to_string(),
+            txid.to_string(),
+        ))?;
+        Ok(path.to_string_lossy().to_string())
+    }
+
+    pub fn get_consignment(&self, asset_id: ContractId, txid: Txid) -> Result<Vec<u8>, RlnError> {
+        let state = self.handle.app_state();
+        block_on_sdk(sdk::get_consignment(
+            state,
+            asset_id.to_string(),
+            txid.to_string(),
+        ))
+    }
+
     pub fn inflate(&self, request: InflateRequest) -> Result<InflateResponse, RlnError> {
         let state = self.handle.app_state();
         let response = block_on_sdk(sdk::inflate(
@@ -1645,6 +1718,8 @@ impl SdkNode {
                 password: String::new(),
                 ldk_chain_sync: ldk_chain_sync.into(),
                 indexer_url,
+                // the flat external-signer unlock has no slot for it; the config file still applies
+                eth_rpc_url: None,
                 proxy_endpoint,
                 announce_addresses,
                 announce_alias,
@@ -1897,6 +1972,21 @@ pub fn sdk_claimhodlinvoice(
 ) -> Result<ClaimHodlInvoiceResponse, RlnError> {
     let handle = NodeHandle::from_app_state(get_uniffi_app_state()?);
     SdkNode { handle }.claimhodlinvoice(request)
+}
+
+pub fn sdk_burn(request: BurnRequest) -> Result<BurnResponse, RlnError> {
+    let handle = NodeHandle::from_app_state(get_uniffi_app_state()?);
+    SdkNode { handle }.burn(request)
+}
+
+pub fn sdk_get_consignment_path(asset_id: ContractId, txid: Txid) -> Result<String, RlnError> {
+    let handle = NodeHandle::from_app_state(get_uniffi_app_state()?);
+    SdkNode { handle }.get_consignment_path(asset_id, txid)
+}
+
+pub fn sdk_get_consignment(asset_id: ContractId, txid: Txid) -> Result<Vec<u8>, RlnError> {
+    let handle = NodeHandle::from_app_state(get_uniffi_app_state()?);
+    SdkNode { handle }.get_consignment(asset_id, txid)
 }
 
 pub fn sdk_inflate(request: InflateRequest) -> Result<InflateResponse, RlnError> {
