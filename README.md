@@ -285,6 +285,7 @@ The node currently exposes the following APIs:
 - `/assetmetadata` (POST)
 - `/backup` (POST)
 - `/btcbalance` (POST)
+- `/burn` (POST)
 - `/cancelhodlinvoice` (POST)
 - `/changepassword` (POST)
 - `/checkindexerurl` (POST)
