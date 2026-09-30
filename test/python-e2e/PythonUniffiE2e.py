@@ -658,7 +658,9 @@ def openchannel_fail_no_utxos_scenario():
             raise RuntimeError("openchannel should fail when no uncolored UTXOs are available")
         except Exception as e:
             no_utxos_err = getattr(rln.RlnError, "NoAvailableUtxos", None)
-            if isinstance(e, rln.RlnError.Conflict) or (
+            # since rgb-lib v0.3.0-beta.42-bfa, running out of free UTXOs while funding the
+            # PSBT is reported as InsufficientBitcoins (mapped to InsufficientFunds)
+            if isinstance(e, (rln.RlnError.Conflict, rln.RlnError.InsufficientFunds)) or (
                 no_utxos_err is not None and isinstance(e, no_utxos_err)
             ):
                 pass
