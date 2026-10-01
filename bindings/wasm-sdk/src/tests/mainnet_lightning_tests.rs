@@ -39,6 +39,125 @@ async fn mainnet_wallet() -> RlnWasmWallet {
         .expect("mainnet wallet")
 }
 
+#[wasm_bindgen(inline_js = r#"
+export function installIdentityIndexerFixture(regtestGenesis, mainnetGenesis) {
+    const fixture = { originalFetch: globalThis.fetch, requests: [] };
+    globalThis.fetch = async (input) => {
+        const url = typeof input === "string" ? input : input.url;
+        fixture.requests.push(url);
+        const genesis = url === "https://identity-indexer.invalid/regtest/block-height/0"
+            ? regtestGenesis
+            : url === "https://identity-indexer.invalid/mainnet/block-height/0"
+                ? mainnetGenesis
+                : null;
+        if (genesis === null) {
+            throw new Error(`Unexpected identity fixture request: ${url}`);
+        }
+        const response = new Response(genesis, { status: 200 });
+        // reqwest reads the final URL from fetch responses; synthetic Response omits it.
+        Object.defineProperty(response, "url", { value: url });
+        return response;
+    };
+    return fixture;
+}
+export function restoreIdentityIndexerFixture(fixture) {
+    globalThis.fetch = fixture.originalFetch;
+    return JSON.stringify(fixture.requests);
+}
+"#)]
+extern "C" {
+    #[wasm_bindgen(js_name = installIdentityIndexerFixture)]
+    fn install_identity_indexer_fixture(regtest_genesis: &str, mainnet_genesis: &str) -> JsValue;
+    #[wasm_bindgen(js_name = restoreIdentityIndexerFixture)]
+    fn restore_identity_indexer_fixture(fixture: &JsValue) -> String;
+}
+
+async fn go_online_with_identity_fixture(wallet: &RlnWasmWallet, network: &str) {
+    let fixture = install_identity_indexer_fixture(
+        &bitcoin::blockdata::constants::genesis_block(bitcoin::Network::Regtest)
+            .block_hash()
+            .to_string(),
+        &bitcoin::blockdata::constants::genesis_block(bitcoin::Network::Bitcoin)
+            .block_hash()
+            .to_string(),
+    );
+    let online = wallet
+        .go_online_value(true, format!("https://identity-indexer.invalid/{network}"))
+        .await;
+    // Restore fetch before any assertion so a fixture failure cannot affect later tests.
+    let requests: Vec<String> =
+        serde_json::from_str(&restore_identity_indexer_fixture(&fixture)).unwrap();
+    online.expect("online wallet against the genesis-only fixture");
+    assert_eq!(
+        requests,
+        [format!(
+            "https://identity-indexer.invalid/{network}/block-height/0"
+        )]
+    );
+}
+
+#[wasm_bindgen_test(async)]
+async fn online_wallet_pubkey_matches_the_live_backend_without_starting_it() {
+    crate::test_utils::reset_wasm_runtime_state_for_tests();
+    crate::runtime_store::preload_runtime_state_from_persistent_store()
+        .await
+        .unwrap();
+    let wallet = RlnWasmWallet::create(&crate::test_utils::test_wallet_data_json())
+        .await
+        .unwrap();
+    go_online_with_identity_fixture(&wallet, "regtest").await;
+    let node = configured_node("regtest");
+    node.attach_wallet(&wallet).unwrap();
+    let before = test_utils::startup_calls();
+    let pure: serde_json::Value = serde_json::from_str(&node.node_pubkey_json().unwrap()).unwrap();
+    assert_eq!(test_utils::startup_calls(), before);
+
+    // Exercise the actual pinned KeysManager through the real live object graph.
+    // This unfunded fixture opens no channels and does not connect to a peer.
+    let live = node
+        .lightning_runtime()
+        .unwrap()
+        .ldk_runtime
+        .live_node_pubkey()
+        .expect("real live object graph with an online RGB wallet");
+    assert_eq!(pure["pubkey"], live);
+    let after = test_utils::startup_calls();
+    assert_eq!(
+        after.get("live_graph").copied().unwrap_or(0),
+        before.get("live_graph").copied().unwrap_or(0) + 1
+    );
+}
+
+#[wasm_bindgen_test(async)]
+async fn mainnet_online_wallet_identity_and_signing_never_start_lightning() {
+    crate::test_utils::reset_wasm_runtime_state_for_tests();
+    crate::runtime_store::preload_runtime_state_from_persistent_store()
+        .await
+        .unwrap();
+    let before = test_utils::startup_calls();
+    let wallet = mainnet_wallet().await;
+    let node = configured_node("mainnet");
+    node.attach_wallet(&wallet).unwrap();
+    let offline_pubkey = node.node_pubkey_json().unwrap();
+    let offline_signature = node.sign_message_json("mainnet identity".into()).unwrap();
+    go_online_with_identity_fixture(&wallet, "mainnet").await;
+    let online_pubkey = node.node_pubkey_json().unwrap();
+    assert_ne!(online_pubkey, offline_pubkey);
+    assert_eq!(online_pubkey, node.node_pubkey_json().unwrap());
+    assert_eq!(
+        offline_signature,
+        node.sign_message_json("mainnet identity".into()).unwrap()
+    );
+    // A compatible handle retains the same online identity without attaching again.
+    let shared = configured_node("mainnet");
+    assert_eq!(online_pubkey, shared.node_pubkey_json().unwrap());
+    assert!(node.lightning.borrow().is_none());
+    assert!(shared.lightning.borrow().is_none());
+    drop(shared);
+    drop(node);
+    assert_eq!(test_utils::startup_calls(), before);
+}
+
 #[wasm_bindgen_test(async)]
 async fn mainnet_lightning_operations_reject_before_runtime_or_state_changes() {
     crate::test_utils::reset_wasm_runtime_state_for_tests();

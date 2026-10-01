@@ -39,10 +39,16 @@ MainnetLightningState: Existing Lightning state requires recovery review before 
 
 This conservative check also refuses historical snapshots from a previously
 on-chain-only node. It checks the current browser's hydrated IndexedDB/localStorage;
-it cannot inspect remote-only `<store_id>-ldk` VSS recovery state because the
-synchronous constructor has no VSS credentials. Review any previous device/remote
-Lightning state before using that identity on Mainnet. Independent wallet objects
-remain directly usable; this node check is not a process-wide wallet restriction.
+it cannot inspect remote-only `<store_id>-ldk` VSS recovery state. Neither the
+synchronous constructor nor SDK `init`/`unlock` accepts that store's credentials.
+Before reusing an identity that previously used remote Lightning storage, an
+operator must review the exact VSS server, LDK store and signing identity configured
+on the previous device. Wallet `configureVssBackup` configures a separate backup
+stream and does not establish that the LDK store is empty. The pinned browser VSS
+client cannot list all keys; an absent or empty manifest is insufficient because a
+successful object write can precede a failed manifest update. The local check does
+not certify remote recovery state. Independent wallet objects remain directly
+usable; this node check is not a process-wide wallet restriction.
 
 Mainnet rejects peer/connect/reconnect, channel/funding, Lightning invoice/payment,
 async-payment and event-processing methods, including `chainSyncTick*`,
@@ -59,7 +65,14 @@ LightningUnsupportedOnMainnet: RLN on mainnet currently supports only on-chain m
 ```
 
 On-chain wallet APIs, RGB invoices and message signing retain their requirements and
-identity derivation. Shared node/status calls do not start Lightning. An absent
+identity derivation. `nodePubkey*` derives the historical live KeysManager public
+key when an online wallet is attached, without constructing LDK. Without an online
+wallet it retains the existing raw signing identity. Previously, a failed LDK graph
+initialization could also make `nodePubkey*` fall back to the raw identity despite
+an online wallet; that error-dependent fallback is no longer attempted. Message
+signing continues to use its existing raw signing key in either case.
+
+Shared node/status calls do not start Lightning. An absent
 runtime reports `disabled` on Mainnet (`cold` before activation otherwise), no active components
 and zero active peers/channels. `chainSyncStop*` is an inactive no-op. Synchronous
 `networkInfo*` returns `NetworkInfoUnavailable` when no chain driver exists; it does
