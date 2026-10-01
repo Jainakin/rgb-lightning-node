@@ -5,7 +5,7 @@
 //! (`docker compose --profile vss up -d`).
 
 use crate::helpers::*;
-use crate::vss_manager_lag::{vss_server_available, ManagerFilterProxy};
+use crate::vss_manager_lag::ManagerFilterProxy;
 use serial_test::serial;
 use std::{fs, time::Duration};
 

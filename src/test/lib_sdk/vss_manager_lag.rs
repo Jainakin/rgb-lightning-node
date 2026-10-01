@@ -10,17 +10,11 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::{fs, time::Duration};
 
-const VSS_SERVER_ADDR: &str = "127.0.0.1:8081";
 const NODE_A_PORT_OFFSET: u16 = 110;
 const NODE_B_PORT_OFFSET: u16 = 110;
 const PASSWORD_A: &str = "nodeApass";
 const PASSWORD_B: &str = "nodeBpass";
 const MANAGER_VSS_KEY: &[u8] = b"_/_/manager";
-
-pub(crate) fn vss_server_available() -> bool {
-    std::net::TcpStream::connect_timeout(&VSS_SERVER_ADDR.parse().unwrap(), Duration::from_secs(2))
-        .is_ok()
-}
 
 /// VSS proxy that can reject channel-manager-key and/or RGB-backup writes,
 /// passing all else through.
@@ -33,6 +27,7 @@ pub(crate) struct ManagerFilterProxy {
 
 impl ManagerFilterProxy {
     pub(crate) fn start() -> Self {
+        let upstream_address = vss_server_addr();
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let port = listener.local_addr().unwrap().port();
         let filter_manager = Arc::new(AtomicBool::new(false));
@@ -48,7 +43,7 @@ impl ManagerFilterProxy {
                 let rgb_flag = Arc::clone(&rgb_flag);
                 let hits = Arc::clone(&hits);
                 std::thread::spawn(move || {
-                    let _ = handle_conn(stream, manager_flag, rgb_flag, hits);
+                    let _ = handle_conn(stream, upstream_address, manager_flag, rgb_flag, hits);
                 });
             }
         });
@@ -123,6 +118,7 @@ fn body_contains(body: &[u8], needle: &[u8]) -> bool {
 
 fn handle_conn(
     mut client: std::net::TcpStream,
+    upstream_address: std::net::SocketAddr,
     filter_manager: Arc<AtomicBool>,
     filter_rgb_backup: Arc<AtomicBool>,
     blocked: Arc<std::sync::atomic::AtomicUsize>,
@@ -144,7 +140,7 @@ fn handle_conn(
             return Ok(());
         }
         // Fresh upstream connection with `Connection: close`: response is EOF-delimited.
-        let mut upstream = std::net::TcpStream::connect(VSS_SERVER_ADDR)?;
+        let mut upstream = std::net::TcpStream::connect(upstream_address)?;
         let mut new_head = String::new();
         for line in head_str.split("\r\n") {
             if line.is_empty() {
@@ -338,7 +334,7 @@ fn restore_node_a(setup: &LagSetup) -> (SdkNode, Result<(), rgb_lightning_node::
 fn manager_replication_outage_cannot_poison_restore() {
     ensure_regtest_available();
     if !vss_server_available() {
-        eprintln!("SKIP: VSS server not available at {VSS_SERVER_ADDR}");
+        eprintln!("SKIP: VSS server not available at {}", vss_server_addr());
         return;
     }
 
@@ -397,7 +393,7 @@ fn manager_replication_outage_cannot_poison_restore() {
 fn restore_refuses_when_final_flush_fails() {
     ensure_regtest_available();
     if !vss_server_available() {
-        eprintln!("SKIP: VSS server not available at {VSS_SERVER_ADDR}");
+        eprintln!("SKIP: VSS server not available at {}", vss_server_addr());
         return;
     }
 

@@ -13,23 +13,18 @@ use crate::helpers::*;
 use serial_test::serial;
 use std::{fs, time::Duration};
 
-const VSS_URL: &str = "http://127.0.0.1:8081/vss";
 const NODE_A_PORT_OFFSET: u16 = 90;
 const NODE_B_PORT_OFFSET: u16 = 90;
 const PASSWORD_A: &str = "nodeApass";
 const PASSWORD_B: &str = "nodeBpass";
 
-fn vss_server_available() -> bool {
-    std::net::TcpStream::connect_timeout(&"127.0.0.1:8081".parse().unwrap(), Duration::from_secs(2))
-        .is_ok()
-}
-
 #[test]
 #[serial]
 fn vss_restores_btc_assets_and_channels_on_fresh_device() {
     ensure_regtest_available();
+    let vss_url = vss_server_url();
     if !vss_server_available() {
-        eprintln!("SKIP: VSS server not available at {VSS_URL}");
+        eprintln!("SKIP: VSS server not available at {vss_url}");
         return;
     }
 
@@ -46,7 +41,7 @@ fn vss_restores_btc_assets_and_channels_on_fresh_device() {
         &node_a_dir,
         NODE_A_DAEMON_PORT + NODE_A_PORT_OFFSET,
         NODE_A_PEER_PORT + NODE_A_PORT_OFFSET,
-        VSS_URL,
+        &vss_url,
     );
     let node_b = make_node(
         &node_b_dir,
@@ -153,7 +148,7 @@ fn vss_restores_btc_assets_and_channels_on_fresh_device() {
         &node_a_dir,
         NODE_A_DAEMON_PORT + NODE_A_PORT_OFFSET,
         NODE_A_PEER_PORT + NODE_A_PORT_OFFSET,
-        VSS_URL,
+        &vss_url,
     );
 
     // The mnemonic returned by init must round-trip (same seed → same
