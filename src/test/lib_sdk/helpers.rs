@@ -660,6 +660,39 @@ pub(crate) fn wait_for_channel_ready(
     }
 }
 
+pub(crate) fn wait_for_outbound_capacity(
+    node: &SdkNode,
+    channel_id: lightning::ln::types::ChannelId,
+    amt_msat: u64,
+    timeout: Duration,
+) {
+    let deadline = Instant::now() + timeout;
+    loop {
+        let channel = node
+            .list_channels()
+            .expect("list_channels while waiting for outbound capacity")
+            .into_iter()
+            .find(|channel| channel.channel_id == channel_id)
+            .expect("expected channel while waiting for outbound capacity");
+        if channel.ready
+            && channel.is_usable
+            && channel.next_outbound_htlc_minimum_msat <= amt_msat
+            && channel.next_outbound_htlc_limit_msat >= amt_msat
+        {
+            return;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "channel {channel_id} cannot send {amt_msat} msat: ready={}, usable={}, minimum={}, limit={}",
+            channel.ready,
+            channel.is_usable,
+            channel.next_outbound_htlc_minimum_msat,
+            channel.next_outbound_htlc_limit_msat,
+        );
+        sleep(Duration::from_millis(100));
+    }
+}
+
 pub(crate) fn wait_for_usable_channels(
     node: &SdkNode,
     expected_num_usable_channels: usize,

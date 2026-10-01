@@ -132,6 +132,8 @@ fn close_coop_standard() {
             600,
             0,
         );
+        // PaymentClaimed can precede the acknowledgment that makes these funds spendable.
+        wait_for_outbound_capacity(&node_b, channel_id, PAYMENT_MSAT, Duration::from_secs(30));
         keysend_with_ln_balance(
             &node_b,
             &node_a,

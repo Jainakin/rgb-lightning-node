@@ -90,6 +90,8 @@ fn close_force_standard() {
             .expect("node A get_channel_id");
 
         keysend(&node_a, node_b_pubkey, None, Some(&asset_id), Some(150));
+        // PaymentClaimed can precede the acknowledgment that makes these funds spendable.
+        wait_for_outbound_capacity(&node_b, channel_id, PAYMENT_MSAT, Duration::from_secs(30));
         keysend(&node_b, node_a_pubkey, None, Some(&asset_id), Some(50));
 
         // Mirrors the original test to avoid racing an outdated commitment TX.
