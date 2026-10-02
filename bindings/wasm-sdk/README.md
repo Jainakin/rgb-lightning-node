@@ -29,7 +29,8 @@ share the existing runtime without reseeding it.
 
 Before constructing a Mainnet node or attaching its wallet, call
 `await sdk.preloadPersistentRuntimeState()` (SDK `init`/`unlock` already preload).
-Construction and adoption check the scope's hydrated local browser storage. Any
+Construction and adoption check the scope's localStorage and durable key inventory
+from the preload. An incomplete inventory refuses Mainnet initialization. Any
 protected Lightning snapshot, monitor, queue, sweep, RGB Lightning KV or peer state
 refuses with `MainnetLightningState`, without decoding, resuming or deleting it:
 
@@ -38,8 +39,10 @@ MainnetLightningState: Existing Lightning state requires recovery review before 
 ```
 
 This conservative check also refuses historical snapshots from a previously
-on-chain-only node. It checks the current browser's hydrated IndexedDB/localStorage;
-it cannot inspect remote-only `<store_id>-ldk` VSS recovery state. Neither the
+on-chain-only node. It checks the current browser's IndexedDB inventory and localStorage.
+The inventory includes writes made through this SDK after preload, but does not
+discover later writes from another tab. It cannot inspect remote-only
+`<store_id>-ldk` VSS recovery state. Neither the
 synchronous constructor nor SDK `init`/`unlock` accepts that store's credentials.
 Before reusing an identity that previously used remote Lightning storage, an
 operator must review the exact VSS server, LDK store and signing identity configured
@@ -229,9 +232,12 @@ selection and validation in `new_with_runtime_id_opt` / `attach_wallet_shared` i
 WASM checks run in `.github/workflows/test.yaml`: the `feature-matrix` job's
 `wasm-without-vls` mode runs `cargo check --target wasm32-unknown-unknown` against
 `bindings/wasm-sdk/Cargo.toml`. The package `pkg/` artifact is built separately by
-`.github/workflows/wasm-artifacts.yaml` via `wasm-pack build`.
+`.github/workflows/wasm-artifacts.yaml` via `wasm-pack build`. That job also runs
+the browser unit suite, including startup and storage regressions, in headless
+Chrome with the existing `wasm-bindgen-test` harness. The default suite does not
+require funded wallets or live Lightning services.
 
-Run the browser unit tests locally (not run in CI):
+Run the complete browser unit suite locally:
 
 ```sh
 WASM_BINDGEN_TEST_TIMEOUT=300 WASM_TEST_BROWSER=chrome ./bindings/wasm-sdk/scripts/run-browser-tests.sh
