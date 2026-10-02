@@ -36,42 +36,6 @@ pub(crate) const CREATE_UTXOS_FEE_RATE: u64 = 7;
 pub(crate) const PROXY_ENDPOINT_LOCAL: &str = "rpc://127.0.0.1:3000/json-rpc";
 const ELECTRUM_URL: &str = "127.0.0.1:50001";
 
-/// Keep live VSS tests on loopback while allowing an isolated Compose port mapping.
-#[cfg(feature = "vss")]
-pub(crate) fn vss_server_addr() -> std::net::SocketAddr {
-    let port = match std::env::var("RLN_TEST_VSS_PORT") {
-        Ok(value) => value
-            .parse::<u16>()
-            .expect("RLN_TEST_VSS_PORT must be an integer between 1 and 65535"),
-        Err(std::env::VarError::NotPresent) => 8081,
-        Err(error) => panic!("invalid RLN_TEST_VSS_PORT: {error}"),
-    };
-    assert_ne!(port, 0, "RLN_TEST_VSS_PORT must be between 1 and 65535");
-    std::net::SocketAddr::from(([127, 0, 0, 1], port))
-}
-
-#[cfg(feature = "vss")]
-pub(crate) fn vss_server_url() -> String {
-    format!("http://{}/vss", vss_server_addr())
-}
-
-/// Default local runs may skip a missing VSS service. Selecting an explicit port commits
-/// the run to exercising VSS, so an unavailable endpoint must fail instead of reporting a skip.
-#[cfg(feature = "vss")]
-pub(crate) fn vss_server_available() -> bool {
-    let address = vss_server_addr();
-    match std::net::TcpStream::connect_timeout(&address, Duration::from_secs(2)) {
-        Ok(_) => true,
-        Err(error) => {
-            assert!(
-                std::env::var_os("RLN_TEST_VSS_PORT").is_none(),
-                "VSS server configured by RLN_TEST_VSS_PORT is unavailable at {address}: {error}"
-            );
-            false
-        }
-    }
-}
-
 static MINER: Lazy<RwLock<Miner>> = Lazy::new(|| RwLock::new(Miner { no_mine_count: 0 }));
 
 fn repo_root() -> &'static Path {
@@ -371,8 +335,7 @@ pub(crate) fn unlock_request(password: &str) -> SdkUnlockRequest {
         ldk_chain_sync: SdkLdkChainSync::BlockSync {
             bitcoind_rpc_username: "user".to_string(),
             bitcoind_rpc_password: "password".to_string(),
-            // Compose publishes RPC on IPv4; localhost may resolve to IPv6 first.
-            bitcoind_rpc_host: "127.0.0.1".to_string(),
+            bitcoind_rpc_host: "localhost".to_string(),
             bitcoind_rpc_port: 18443,
         },
         indexer_url: Some("127.0.0.1:50001".to_string()),
@@ -657,39 +620,6 @@ pub(crate) fn wait_for_channel_ready(
             "cannot find re-established channel"
         );
         sleep(Duration::from_secs(1));
-    }
-}
-
-pub(crate) fn wait_for_outbound_capacity(
-    node: &SdkNode,
-    channel_id: lightning::ln::types::ChannelId,
-    amt_msat: u64,
-    timeout: Duration,
-) {
-    let deadline = Instant::now() + timeout;
-    loop {
-        let channel = node
-            .list_channels()
-            .expect("list_channels while waiting for outbound capacity")
-            .into_iter()
-            .find(|channel| channel.channel_id == channel_id)
-            .expect("expected channel while waiting for outbound capacity");
-        if channel.ready
-            && channel.is_usable
-            && channel.next_outbound_htlc_minimum_msat <= amt_msat
-            && channel.next_outbound_htlc_limit_msat >= amt_msat
-        {
-            return;
-        }
-        assert!(
-            Instant::now() < deadline,
-            "channel {channel_id} cannot send {amt_msat} msat: ready={}, usable={}, minimum={}, limit={}",
-            channel.ready,
-            channel.is_usable,
-            channel.next_outbound_htlc_minimum_msat,
-            channel.next_outbound_htlc_limit_msat,
-        );
-        sleep(Duration::from_millis(100));
     }
 }
 

@@ -541,15 +541,10 @@ fn wallet_rgb_proxy_transport_get(idb_key: &str) -> Option<RlnWasmRgbProxyTransp
 /// post-close sweep, which needs a transport endpoint for `witness_receive` and a proxy URL for
 /// `post_consignment` outside any facade call. `None` when no transport has been configured.
 pub(crate) fn effective_rgb_proxy_endpoint_for_wallet_key(idb_key: &str) -> Option<String> {
-    let config =
-        wallet_rgb_proxy_transport_get(idb_key).or_else(sdk_default_rgb_proxy_transport)?;
+    let config = wallet_rgb_proxy_transport_get(idb_key).or_else(sdk_default_rgb_proxy_transport)?;
     match (&config.auth_token, &config.node_id) {
         (Some(token), Some(node_id)) => {
-            let separator = if config.endpoint.contains('?') {
-                '&'
-            } else {
-                '?'
-            };
+            let separator = if config.endpoint.contains('?') { '&' } else { '?' };
             Some(format!(
                 "{}{}auth_token={}&node_id={}",
                 config.endpoint,
