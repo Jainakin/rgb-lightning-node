@@ -472,12 +472,23 @@ impl RlnWasmNode {
                 "runtime network selection is in progress",
             ));
         }
+        let network = self.configured_network.borrow().clone();
+        self.prepare_lightning_runtime_for_network(start, &network)
+    }
+
+    // A promoting constructor holds the scope transition while staging its requested network.
+    // Publish that selection only after all fallible runtime preparation succeeds.
+    fn prepare_lightning_runtime_for_network(
+        &self,
+        start: bool,
+        network: &str,
+    ) -> Result<(), JsValue> {
+        crate::check_lightning_supported(network)?;
         if self.lightning.borrow().is_none() {
-            let network = self.configured_network.borrow().clone();
             let resolved = if network == "unknown" {
                 "regtest"
             } else {
-                &network
+                network
             };
             let selected = crate::WasmRlnNetwork::parse(resolved)?.as_rgb();
             let runtime_key = self.runtime_manager_key();
@@ -673,9 +684,6 @@ impl RlnWasmNode {
                         "runtime scope already uses a different Bitcoin network",
                     ));
                 }
-                if previous == "unknown" && network_label != "unknown" {
-                    *scope.network.borrow_mut() = network_label.to_string();
-                }
                 return Ok(scope);
             }
             let scope = Rc::new(NodeRuntimeScope {
@@ -699,6 +707,13 @@ impl RlnWasmNode {
             );
             Ok(scope)
         })?;
+        let network_selection =
+            if runtime_scope.network.borrow().as_str() == "unknown" && network_label != "unknown" {
+                runtime_scope.network_transition.set(true);
+                Some(NodeNetworkTransition(Rc::clone(&runtime_scope)))
+            } else {
+                None
+            };
         let runtime_event_snapshot =
             load_runtime_event_log_snapshot(&persistence_keys.runtime_events_storage_key);
         let runtime_events = runtime_event_snapshot
@@ -756,10 +771,17 @@ impl RlnWasmNode {
             crate::check_lightning_supported(&configured_network.borrow())
         }));
         if network.is_some() && network_label != "mainnet" {
-            node.prepare_lightning_runtime(false)?;
+            if network_selection.is_some() {
+                node.prepare_lightning_runtime_for_network(false, network_label)?;
+            } else {
+                node.prepare_lightning_runtime(false)?;
+            }
             node.install_auto_peer_manager_hooks_inner();
             node.register_runtime_scope_for_local_pubkey();
             node.lightning_runtime()?.chain_sync.resume_if_running();
+        } else if network_selection.is_some() {
+            *node.configured_network.borrow_mut() = network_label.to_string();
+            *node.network.borrow_mut() = network_label.to_string();
         }
         Ok(node)
     }

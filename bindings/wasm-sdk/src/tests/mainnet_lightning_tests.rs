@@ -1010,3 +1010,107 @@ async fn mainnet_shared_wallet_policy_and_reconnect_never_register_or_start() {
     }
     assert_eq!(test_utils::startup_calls(), before);
 }
+
+#[wasm_bindgen_test(async)]
+async fn failed_explicit_sibling_constructor_preserves_cold_network_selection() {
+    crate::test_utils::reset_wasm_runtime_state_for_tests();
+    crate::runtime_store::preload_runtime_state_from_persistent_store()
+        .await
+        .unwrap();
+    let node = cold_shared_node("ws://constructor-selection.invalid", "failed-sibling");
+    let failure = with_blocked_storage_read(&node.persistence_keys.chain_sync_storage_key, || {
+        RlnWasmNode::new_with_node_runtime_id(
+            node.proxy_url.clone(),
+            "failed-sibling".into(),
+            "regtest".into(),
+        )
+    });
+    assert!(failure.is_err());
+    assert_eq!(node.configured_network.borrow().as_str(), "unknown");
+    assert!(!node.runtime_scope.network_transition.get());
+    assert!(node.lightning.borrow().is_none());
+    assert!(!has_peer_manager_hooks());
+    assert_eq!(
+        crate::ldk_live_backend::registered_node_config_for_tests(&node.runtime_manager_key()),
+        (false, None)
+    );
+    let wallet = mainnet_wallet().await;
+    let before = test_utils::startup_calls();
+    node.attach_wallet(&wallet).unwrap();
+    assert_eq!(node.configured_network.borrow().as_str(), "mainnet");
+    assert!(node.lightning.borrow().is_none());
+    assert_eq!(test_utils::startup_calls(), before);
+}
+
+#[wasm_bindgen_test(async)]
+async fn explicit_sibling_constructor_blocks_reentrant_selection_and_can_retry() {
+    crate::test_utils::reset_wasm_runtime_state_for_tests();
+    crate::runtime_store::preload_runtime_state_from_persistent_store()
+        .await
+        .unwrap();
+    let node = Rc::new(cold_shared_node(
+        "ws://constructor-selection.invalid",
+        "reentrant-sibling",
+    ));
+    let observed = Rc::new(RefCell::new(None));
+    let observed_callback = Rc::clone(&observed);
+    let node_callback = Rc::clone(&node);
+    let callback = wasm_bindgen::closure::Closure::<dyn FnMut()>::new(move || {
+        let network = node_callback.configured_network.borrow().clone();
+        let result = RlnWasmNode::new_with_node_runtime_id(
+            node_callback.proxy_url.clone(),
+            "reentrant-sibling".into(),
+            "mainnet".into(),
+        );
+        observed_callback.replace(Some((
+            network,
+            result.err().and_then(|err| err.as_string()),
+        )));
+    });
+    let storage = js_sys::Reflect::get(&js_sys::global(), &JsValue::from_str("Storage")).unwrap();
+    let prototype = js_sys::Reflect::get(&storage, &JsValue::from_str("prototype")).unwrap();
+    let original = js_sys::Reflect::get(&prototype, &JsValue::from_str("getItem")).unwrap();
+    let replacement = js_sys::Function::new_with_args("original, blocked, callback", "return function(key) { if (key === blocked) { callback(); throw new Error('injected constructor read failure'); } return original.call(this, key); };")
+        .call3(&JsValue::NULL, &original, &JsValue::from_str(&node.persistence_keys.chain_sync_storage_key), callback.as_ref()).unwrap();
+    js_sys::Reflect::set(&prototype, &JsValue::from_str("getItem"), &replacement).unwrap();
+    let failure = RlnWasmNode::new_with_node_runtime_id(
+        node.proxy_url.clone(),
+        "reentrant-sibling".into(),
+        "signet".into(),
+    );
+    js_sys::Reflect::set(&prototype, &JsValue::from_str("getItem"), &original).unwrap();
+    assert!(failure.is_err());
+    assert_eq!(
+        observed.borrow().as_ref(),
+        Some(&(
+            "unknown".to_owned(),
+            Some("runtime network selection is in progress".to_owned())
+        ))
+    );
+    assert_eq!(node.configured_network.borrow().as_str(), "unknown");
+    assert!(!node.runtime_scope.network_transition.get());
+    assert!(node.lightning.borrow().is_none());
+
+    let sibling = RlnWasmNode::new_with_node_runtime_id(
+        node.proxy_url.clone(),
+        "reentrant-sibling".into(),
+        "signet".into(),
+    )
+    .unwrap();
+    assert_eq!(node.configured_network.borrow().as_str(), "signet");
+    assert_eq!(
+        sibling
+            .lightning_runtime()
+            .unwrap()
+            .chain_sync
+            .status()
+            .network,
+        "signet"
+    );
+    assert!(!node.runtime_scope.network_transition.get());
+    assert!(node.lightning.borrow().is_some());
+    assert_eq!(
+        sibling.bridge.connection_hooks_ready().unwrap(),
+        (true, true)
+    );
+}
