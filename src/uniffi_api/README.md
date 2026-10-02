@@ -49,7 +49,13 @@ Persisted mainnet Lightning state causes `RlnError::MainnetLightningState` durin
 The appended error variant preserves existing error ordinals. This includes opaque
 empty snapshots from older on-chain-only wallets; no state is deleted or resumed.
 See [mainnet startup and recovery requirements](../../README.md) before upgrading an
-existing wallet. Supported non-mainnet networks retain their existing behavior.
+existing wallet. Lightning remains available on supported non-mainnet networks with
+the same wallet and signing policies.
+
+On all networks, canceling an asynchronous Rust SDK unlock caller does not abandon
+the unlock operation. Shutdown waits for an in-progress unlock to complete before
+stopping the node, and a shut-down handle cannot unlock again. Lock and shutdown also
+wait for an already admitted manual wallet backup before releasing its storage fence.
 
 ## Dependency layering
 

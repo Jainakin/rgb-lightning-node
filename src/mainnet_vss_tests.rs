@@ -3,6 +3,7 @@
 
 use std::collections::{BTreeMap, HashSet};
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 use axum::body::Bytes;
 use axum::extract::State;
@@ -13,6 +14,7 @@ use axum::{Json, Router};
 use rgb_lib::BitcoinNetwork;
 use serde_json::{json, Value};
 use tokio::net::TcpListener;
+use tokio::sync::Semaphore;
 use tokio::task::JoinHandle;
 use vss_client::prost::Message;
 use vss_client::types::{
@@ -47,10 +49,17 @@ struct Request {
     authenticated: bool,
 }
 
+struct BackupGate {
+    store: String,
+    entered: Semaphore,
+    resume: Semaphore,
+}
+
 #[derive(Default)]
 struct ServerState {
     stores: BTreeMap<String, Store>,
     requests: Vec<Request>,
+    backup_gate: Option<Arc<BackupGate>>,
 }
 
 impl ServerState {
@@ -131,6 +140,28 @@ async fn handle(
     headers: HeaderMap,
     body: Bytes,
 ) -> Response {
+    // Pause a selected real RGB backup before committing its protobuf transaction.
+    let gate = if uri.path() == "/vss/putObjects" {
+        let request = PutObjectRequest::decode(body.clone()).unwrap();
+        let mut state = state.lock().unwrap();
+        if state.backup_gate.as_ref().is_some_and(|gate| {
+            request.store_id == gate.store
+                && request
+                    .transaction_items
+                    .iter()
+                    .any(|item| item.key == "backup/data")
+        }) {
+            state.backup_gate.take()
+        } else {
+            None
+        }
+    } else {
+        None
+    };
+    if let Some(gate) = gate {
+        gate.entered.add_permits(1);
+        gate.resume.acquire().await.unwrap().forget();
+    }
     let mut state = state.lock().unwrap();
     let authenticated = headers.contains_key("authorization");
     match uri.path() {
@@ -538,4 +569,131 @@ async fn mainnet_vss_remote_only_manager_on_later_page_is_preserved_and_fence_re
         .iter()
         .filter(|r| r.method != "list")
         .all(|r| r.keys.iter().chain(&r.deletes).all(|key| key == FENCE)));
+}
+
+/// The second stop has no session ownership while the first is still stopping its store.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn mainnet_vss_concurrent_stop_keeps_fence_with_teardown_owner() {
+    let server = Server::new().await;
+    let wallet = Wallet::new(&server).await;
+    sdk::unlock(wallet.state.clone(), wallet.request())
+        .await
+        .unwrap();
+    let common = wallet
+        .state
+        .unlocked_app_state
+        .lock()
+        .await
+        .as_ref()
+        .unwrap()
+        .common
+        .clone();
+    let node_store = store_id();
+    let fence = server.rows(&node_store)[FENCE].clone();
+    let entered = Arc::new(Semaphore::new(0));
+    let signal = entered.clone();
+    let (resume, wait) = std::sync::mpsc::channel();
+    let wait = Mutex::new(wait);
+    common.kv_store.set_before_stop_gate_hook(Arc::new(move || {
+        signal.add_permits(1);
+        wait.lock()
+            .unwrap()
+            .recv_timeout(Duration::from_secs(10))
+            .expect("release stop gate");
+    }));
+    let first = tokio::spawn(crate::ldk::stop_node(wallet.state.clone()));
+    tokio::time::timeout(Duration::from_secs(10), entered.acquire())
+        .await
+        .unwrap()
+        .unwrap()
+        .forget();
+    assert!(wallet.state.unlocked_app_state.lock().await.is_none());
+    assert!(!first.is_finished());
+    tokio::time::timeout(
+        Duration::from_secs(1),
+        crate::ldk::stop_node(wallet.state.clone()),
+    )
+    .await
+    .expect("second stop owns no session");
+    assert_eq!(server.rows(&node_store)[FENCE], fence);
+    resume.send(()).unwrap();
+    tokio::time::timeout(Duration::from_secs(10), first)
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(!server.rows(&node_store).contains_key(FENCE));
+    assert!(common.persistence_worker.lock().unwrap().is_none());
+}
+
+/// Lock cannot hand over the fence until an already admitted backup commits, even if its caller exits.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn mainnet_vss_lock_waits_for_canceled_manual_backup_callers() {
+    let server = Server::new().await;
+    let wallet = Wallet::new(&server).await;
+    let node_store = store_id();
+    let rgb_store = format!("{node_store}_rgb");
+    for use_rest in [false, true] {
+        sdk::unlock(wallet.state.clone(), wallet.request())
+            .await
+            .unwrap();
+        let previous = sdk::vss_backup(wallet.state.clone()).await.unwrap();
+        let gate = Arc::new(BackupGate {
+            store: rgb_store.clone(),
+            entered: Semaphore::new(0),
+            resume: Semaphore::new(0),
+        });
+        server.state.lock().unwrap().backup_gate = Some(gate.clone());
+        let state = wallet.state.clone();
+        let backup = tokio::spawn(async move {
+            if use_rest {
+                routes::vss_backup(State(state)).await.map(|_| ())
+            } else {
+                sdk::vss_backup(state).await.map(|_| ())
+            }
+        });
+        tokio::time::timeout(Duration::from_secs(10), gate.entered.acquire())
+            .await
+            .unwrap()
+            .unwrap()
+            .forget();
+        assert!(
+            wallet.state.unlocked_app_state.try_lock().is_err(),
+            "backup must retain the session guard"
+        );
+        let state = wallet.state.clone();
+        let lock = tokio::spawn(async move { routes::lock(State(state)).await });
+        backup.abort();
+        assert!(backup.await.unwrap_err().is_cancelled());
+        assert!(!lock.is_finished());
+        assert!(server.rows(&node_store).contains_key(FENCE));
+        gate.resume.add_permits(1);
+        let _ = tokio::time::timeout(Duration::from_secs(15), lock)
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+        assert!(server.rows(&rgb_store)["backup/data"].version > previous);
+        assert!(!server.rows(&node_store).contains_key(FENCE));
+        assert!(wallet.state.unlocked_app_state.lock().await.is_none());
+        assert!(!*wallet.state.changing_state.lock().unwrap());
+        let state = server.state.lock().unwrap();
+        let backup_position = state
+            .requests
+            .iter()
+            .rposition(|r| {
+                r.store == rgb_store
+                    && r.method == "put"
+                    && r.keys.iter().any(|key| key == "backup/data")
+            })
+            .unwrap();
+        let release_position = state
+            .requests
+            .iter()
+            .rposition(|r| r.store == node_store && r.deletes.iter().any(|key| key == FENCE))
+            .unwrap();
+        assert!(
+            backup_position < release_position,
+            "RGB backup must commit before fence release"
+        );
+    }
 }

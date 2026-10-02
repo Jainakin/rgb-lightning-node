@@ -4130,9 +4130,9 @@ pub(crate) async fn lock(
             }
         };
 
-        tracing::debug!("Stopping LDK...");
+        tracing::debug!("Stopping node...");
         stop_node(state.clone()).await;
-        tracing::debug!("LDK stopped");
+        tracing::debug!("Node stopped");
 
         state.update_unlocked_app_state(None).await;
 
@@ -6127,6 +6127,33 @@ mod state_mocks {
 mod changing_state_guard_tests {
     use super::state_mocks::mock_state_with_auth;
     use super::ChangingStateGuard;
+
+    // Poll the actual admission helper behind the session mutex; no sleep or spawned-task race.
+    #[tokio::test]
+    async fn queued_locked_admission_rechecks_transition() {
+        use std::future::{poll_fn, Future};
+        use std::task::Poll;
+        let state = mock_state_with_auth(None).await;
+        let storage_dir = state.static_state.storage_dir_path.clone();
+        let guard = state.unlocked_app_state.lock().await;
+        assert!(guard.is_none());
+        let mut waiting = std::pin::pin!(state.check_locked());
+        poll_fn(|cx| {
+            assert!(waiting.as_mut().poll(cx).is_pending());
+            Poll::Ready(())
+        })
+        .await;
+        *state.get_changing_state() = true;
+        drop(guard);
+        assert!(matches!(
+            waiting.await,
+            Err(crate::error::APIError::ChangingState)
+        ));
+        assert!(state.unlocked_app_state.lock().await.is_none());
+        assert!(state.ldk_background_services.lock().unwrap().is_none());
+        *state.get_changing_state() = false;
+        std::fs::remove_dir_all(storage_dir).unwrap();
+    }
 
     #[tokio::test]
     async fn sets_and_clears_the_flag() {

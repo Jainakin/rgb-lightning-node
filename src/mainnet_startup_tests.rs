@@ -15,12 +15,15 @@ use bitcoin::consensus::encode::serialize_hex;
 use rgb_lib::BitcoinNetwork;
 use serde_json::{json, Value};
 use std::{
+    future::{poll_fn, Future},
     sync::{Arc, Mutex},
+    task::Poll,
     time::Duration,
 };
 use tokio::{
     io::{AsyncBufReadExt, AsyncWriteExt, BufReader},
     net::TcpListener,
+    sync::Semaphore,
     task::JoinHandle,
 };
 
@@ -28,10 +31,31 @@ const PASSWORD: &str = "mainnet-test-password";
 const MNEMONIC: &str =
     "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about";
 
+struct RequestGate {
+    entered: Semaphore,
+    resume: Semaphore,
+}
+impl RequestGate {
+    fn new() -> Arc<Self> {
+        Arc::new(Self {
+            entered: Semaphore::new(0),
+            resume: Semaphore::new(0),
+        })
+    }
+    async fn wait(&self) {
+        tokio::time::timeout(Duration::from_secs(10), self.entered.acquire())
+            .await
+            .expect("startup must reach the indexer")
+            .unwrap()
+            .forget();
+    }
+}
+
 pub(crate) struct Indexer {
     pub(crate) url: String,
     requests: Arc<Mutex<Vec<String>>>,
     unexpected: Arc<Mutex<Vec<String>>>,
+    next_request_gate: Arc<Mutex<Option<Arc<RequestGate>>>>,
     task: JoinHandle<()>,
 }
 impl Drop for Indexer {
@@ -45,6 +69,8 @@ impl Indexer {
         let url = format!("tcp://{}", listener.local_addr().unwrap());
         let requests = Arc::new(Mutex::new(Vec::new()));
         let unexpected = Arc::new(Mutex::new(Vec::new()));
+        let next_request_gate: Arc<Mutex<Option<Arc<RequestGate>>>> = Default::default();
+        let gate = next_request_gate.clone();
         let seen = Arc::clone(&requests);
         let errors = Arc::clone(&unexpected);
         let task = tokio::spawn(async move {
@@ -53,11 +79,17 @@ impl Indexer {
                 let (stream, _) = listener.accept().await.unwrap();
                 let seen = Arc::clone(&seen);
                 let errors = Arc::clone(&errors);
+                let gate = gate.clone();
                 connections.spawn(async move {
                     let (reader, mut writer) = stream.into_split();
                     let mut lines = BufReader::new(reader).lines();
                     while let Ok(Some(line)) = lines.next_line().await {
                         let request: Value = serde_json::from_str(&line).unwrap();
+                        let paused = gate.lock().unwrap().take();
+                        if let Some(paused) = paused {
+                            paused.entered.add_permits(1);
+                            paused.resume.acquire().await.unwrap().forget();
+                        }
                         let response = |request: &Value| {
                             let method = request["method"].as_str().unwrap();
                             seen.lock().unwrap().push(method.into());
@@ -89,6 +121,7 @@ impl Indexer {
             url,
             requests,
             unexpected,
+            next_request_gate,
             task,
         }
     }
@@ -136,14 +169,17 @@ impl Fixture {
         }));
         let proxy_task =
             tokio::spawn(async move { axum::serve(proxy_listener, proxy_router).await.unwrap() });
+        // Mainnet keeps an occupied trap port; non-mainnet must bind and release a real port.
+        let peer_port = if network == BitcoinNetwork::Mainnet {
+            peer.local_addr().unwrap().port()
+        } else {
+            let available = TcpListener::bind("127.0.0.1:0").await.unwrap();
+            available.local_addr().unwrap().port()
+        };
         let state = start_daemon(&UserArgs {
             storage_dir_path: directory.path().to_path_buf(),
             daemon_listening_port: 0,
-            ldk_peer_listening_port: if network == BitcoinNetwork::Mainnet {
-                peer.local_addr().unwrap().port()
-            } else {
-                0
-            },
+            ldk_peer_listening_port: peer_port,
             network,
             max_media_upload_size_mb: 1,
             max_aggregated_media_size_per_channel_mb: 1,
@@ -447,17 +483,17 @@ async fn mainnet_legacy_state_refusal_preserves_bytes_and_does_not_contact_index
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn canceled_sdk_caller_does_not_abandon_wallet_startup() {
     let fixture = Fixture::new().await;
+    let gate = RequestGate::new();
+    *fixture.indexer.next_request_gate.lock().unwrap() = Some(gate.clone());
     let state = fixture.state.clone();
     let request = fixture.request();
     let caller = tokio::spawn(async move { sdk::unlock(state, request).await });
-    tokio::time::timeout(Duration::from_secs(10), async {
-        while fixture.indexer.requests.lock().unwrap().is_empty() {
-            tokio::task::yield_now().await;
-        }
-    })
-    .await
-    .unwrap();
+    gate.wait().await;
+    assert!(*fixture.state.changing_state.lock().unwrap());
+    assert!(fixture.state.unlocked_app_state.lock().await.is_none());
     caller.abort();
+    assert!(caller.await.unwrap_err().is_cancelled());
+    gate.resume.add_permits(1);
     tokio::time::timeout(Duration::from_secs(10), async {
         while *fixture.state.changing_state.lock().unwrap() {
             tokio::task::yield_now().await;
@@ -469,6 +505,87 @@ async fn canceled_sdk_caller_does_not_abandon_wallet_startup() {
     let _ = routes::lock(axum::extract::State(fixture.state.clone()))
         .await
         .unwrap();
+}
+
+/// Poll while the mutex is owned so the transition begins after the initial admission check.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn mainnet_queued_wallet_calls_recheck_transition_after_mutex() {
+    let fixture = Fixture::new().await;
+    sdk::unlock(fixture.state.clone(), fixture.request())
+        .await
+        .unwrap();
+    let guard = fixture.state.unlocked_app_state.lock().await;
+    let mut sdk_call = std::pin::pin!(sdk::address(fixture.state.clone()));
+    let mut rest_call =
+        std::pin::pin!(routes::address(axum::extract::State(fixture.state.clone())));
+    poll_fn(|cx| {
+        assert!(sdk_call.as_mut().poll(cx).is_pending());
+        assert!(rest_call.as_mut().poll(cx).is_pending());
+        Poll::Ready(())
+    })
+    .await;
+    *fixture.state.changing_state.lock().unwrap() = true;
+    drop(guard);
+    assert!(matches!(sdk_call.await, Err(APIError::ChangingState)));
+    assert!(matches!(rest_call.await, Err(APIError::ChangingState)));
+    *fixture.state.changing_state.lock().unwrap() = false;
+    assert!(sdk::address(fixture.state.clone())
+        .await
+        .unwrap()
+        .address
+        .starts_with("bc1"));
+    let _ = routes::lock(axum::extract::State(fixture.state.clone()))
+        .await
+        .unwrap();
+}
+
+#[cfg(feature = "uniffi")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn mainnet_shutdown_waits_for_inflight_unlock_publication() {
+    let fixture = Fixture::new().await;
+    let gate = RequestGate::new();
+    *fixture.indexer.next_request_gate.lock().unwrap() = Some(gate.clone());
+    let state = fixture.state.clone();
+    let request = fixture.request();
+    let unlock = tokio::spawn(async move { sdk::unlock(state, request).await });
+    gate.wait().await;
+    let handle = crate::NodeHandle::from_app_state(fixture.state.clone());
+    let shutdown = tokio::spawn(async move { handle.shutdown().await });
+    fixture.state.cancel_token.cancelled().await;
+    assert!(*fixture.state.changing_state.lock().unwrap());
+    assert!(
+        !shutdown.is_finished(),
+        "shutdown must wait for the unpublished session"
+    );
+    gate.resume.add_permits(1);
+    tokio::time::timeout(Duration::from_secs(15), unlock)
+        .await
+        .unwrap()
+        .unwrap()
+        .unwrap();
+    tokio::time::timeout(Duration::from_secs(15), shutdown)
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(!*fixture.state.changing_state.lock().unwrap());
+    assert!(fixture.state.unlocked_app_state.lock().await.is_none());
+    assert!(fixture
+        .state
+        .ldk_background_services
+        .lock()
+        .unwrap()
+        .is_none());
+    assert!(matches!(
+        sdk::unlock(fixture.state.clone(), fixture.request()).await,
+        Err(APIError::Unexpected(detail)) if detail == "Node is shutting down"
+    ));
+    assert!(fixture.state.unlocked_app_state.lock().await.is_none());
+    assert!(!*fixture.state.changing_state.lock().unwrap());
+    assert!(
+        tokio::time::timeout(Duration::from_millis(20), fixture.peer.accept())
+            .await
+            .is_err()
+    );
 }
 
 #[cfg(all(feature = "uniffi", feature = "vls"))]
@@ -585,6 +702,20 @@ async fn regtest_starts_lightning_and_restores_after_lock() {
             .lock()
             .unwrap()
             .is_some());
+        let peer_address = (
+            "127.0.0.1",
+            fixture.state.static_state.ldk_peer_listening_port,
+        );
+        tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                if tokio::net::TcpStream::connect(peer_address).await.is_ok() {
+                    break;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("non-mainnet listener must accept connections");
         let info = sdk::node_info(fixture.state.clone()).await.unwrap();
         if let Some(expected) = &node_id {
             assert_eq!(&info.pubkey, expected);
@@ -622,6 +753,10 @@ async fn regtest_starts_lightning_and_restores_after_lock() {
             .lock()
             .unwrap()
             .is_none());
+        let released = TcpListener::bind(peer_address)
+            .await
+            .expect("lock must release the peer port before restart");
+        drop(released);
         let store = crate::kv_store::SeaOrmKvStore::from_connection(fixture.state.db());
         assert!(!store
             .read(

@@ -110,6 +110,7 @@ use std::convert::TryInto;
 use std::fs;
 use std::hash::{DefaultHasher, Hash, Hasher};
 use std::net::ToSocketAddrs;
+use std::net::{SocketAddr, TcpListener};
 use std::path::Path;
 use std::str::FromStr;
 #[cfg(test)]
@@ -119,6 +120,7 @@ use std::sync::{Arc, Mutex, MutexGuard, RwLock, Weak};
 #[cfg(any(test, feature = "vss"))]
 use std::time::Instant;
 use std::time::{Duration, SystemTime};
+use time::OffsetDateTime;
 use tokio::runtime::Handle;
 use tokio::sync::watch::Sender;
 use tokio::task::JoinHandle;
@@ -185,11 +187,11 @@ use crate::signer::{
 };
 use crate::swap::{SwapData, SwapInfo};
 use crate::utils::{
-    connect_peer_if_necessary, description_from_invoice, description_hash_from_invoice,
-    do_connect_peer, get_current_timestamp, get_max_local_rgb_amount, hex_str,
-    validate_and_parse_payment_hash, validate_and_parse_payment_preimage, AppState, CommonState,
-    LightningState, StaticState, UnlockedAppState, FATAL_ERROR, PROXY_ENDPOINT_LOCAL,
-    PROXY_ENDPOINT_PUBLIC,
+    check_port_is_available, connect_peer_if_necessary, description_from_invoice,
+    description_hash_from_invoice, do_connect_peer, get_current_timestamp,
+    get_max_local_rgb_amount, hex_str, validate_and_parse_payment_hash,
+    validate_and_parse_payment_preimage, AppState, CommonState, LightningState, StaticState,
+    UnlockedAppState, FATAL_ERROR, PROXY_ENDPOINT_LOCAL, PROXY_ENDPOINT_PUBLIC,
 };
 
 const RGB_TRANSFER_CHAN_EXPIRATION_SECS: u64 = 86400;
@@ -345,8 +347,6 @@ pub(crate) struct LdkBackgroundServices {
     peer_manager: Arc<PeerManager>,
     bp_exit: Sender<()>,
     background_processor: Option<JoinHandle<Result<(), io::Error>>>,
-    shutdown: CancellationToken,
-    tasks: Vec<JoinHandle<()>>,
 }
 
 #[derive(Clone, Debug)]
@@ -5413,42 +5413,6 @@ async fn start_lightning(
     #[cfg(not(feature = "vss"))]
     let bp_kv_store: BpKvStore = KVStoreSyncWrapper(Arc::clone(&kv_store));
 
-    // Regularly broadcast our node_announcement. This is only required (or possible) if we have
-    // some public channels.
-    let mut ldk_announced_listen_addr = Vec::new();
-    for addr in &unlock_request.announce_addresses {
-        match SocketAddress::from_str(addr) {
-            Ok(sa) => {
-                ldk_announced_listen_addr.push(sa);
-            }
-            Err(_) => {
-                return Err(APIError::InvalidAnnounceAddresses(format!(
-                    "failed to parse address '{addr}'"
-                )))
-            }
-        }
-    }
-    let ldk_announced_node_name = match &unlock_request.announce_alias {
-        Some(s) => {
-            if s.len() > 32 {
-                return Err(APIError::InvalidAnnounceAlias(s!(
-                    "cannot be longer than 32 bytes"
-                )));
-            }
-            let mut bytes = [0; 32];
-            bytes[..s.len()].copy_from_slice(s.as_bytes());
-            bytes
-        }
-        None => [0; 32],
-    };
-
-    let listener = crate::utils::bind_first_available(&[
-        format!("[::]:{ldk_peer_listening_port}"),
-        format!("0.0.0.0:{ldk_peer_listening_port}"),
-    ])
-    .await
-    .map_err(|e| APIError::Unexpected(format!("failed to bind Lightning peer listener: {e}")))?;
-
     // Initialize the chain backend for the requested sync mode
     let handle = tokio::runtime::Handle::current();
     let ChainSetup {
@@ -6120,42 +6084,36 @@ async fn start_lightning(
     // ## Running LDK
     // Initialize networking
 
-    let output_sweeper: Arc<OutputSweeper> = Arc::new(output_sweeper);
-    // Finish fallible initial sync before any protocol worker starts accepting peers.
-    #[cfg(feature = "transaction-sync")]
-    #[allow(irrefutable_let_patterns)]
-    if let ChainBackend::TransactionSync { tx_sync, .. } = &backend {
-        let confirmables: Vec<Arc<dyn Confirm + Send + Sync>> = vec![
-            channel_manager.clone(),
-            chain_monitor.clone(),
-            output_sweeper.clone(),
-        ];
-        sync_chain_data(tx_sync.clone(), confirmables)
-            .await
-            .map_err(|e| APIError::InvalidIndexer(e.to_string()))?;
-    }
     let peer_manager_connection_handler = peer_manager.clone();
+    let listening_port = ldk_peer_listening_port;
     let stop_processing = Arc::new(AtomicBool::new(false));
-    let shutdown = CancellationToken::new();
-    let listener_shutdown = shutdown.clone();
-    let listener_task = tokio::spawn(async move {
+    let stop_listen = Arc::clone(&stop_processing);
+    tokio::spawn(async move {
+        // Dual-stack when available; hosts with IPv6 disabled fall back to IPv4.
+        let listener = crate::utils::bind_first_available(&[
+            format!("[::]:{listening_port}"),
+            format!("0.0.0.0:{listening_port}"),
+        ])
+        .await
+        .expect("Failed to bind to listen port - is something else already listening on it?");
         loop {
-            let accepted = tokio::select! {
-                biased;
-                _ = listener_shutdown.cancelled() => break,
-                accepted = listener.accept() => accepted,
-            };
-            let tcp_stream = accepted
-                .expect("Lightning listener failed to accept a connection")
-                .0;
             let peer_mgr = peer_manager_connection_handler.clone();
+            let tcp_stream = listener.accept().await.unwrap().0;
+            if stop_listen.load(Ordering::Acquire) {
+                return;
+            }
             tokio::spawn(async move {
-                lightning_net_tokio::setup_inbound(peer_mgr, tcp_stream.into_std().unwrap()).await;
+                lightning_net_tokio::setup_inbound(
+                    peer_mgr.clone(),
+                    tcp_stream.into_std().unwrap(),
+                )
+                .await;
             });
         }
     });
 
     // Connect and Disconnect Blocks
+    let output_sweeper: Arc<OutputSweeper> = Arc::new(output_sweeper);
     let stop_listen = Arc::clone(&stop_processing);
     match backend {
         #[cfg(feature = "block-sync")]
@@ -6192,6 +6150,10 @@ async fn start_lightning(
                 chain_monitor.clone(),
                 output_sweeper.clone(),
             ];
+            // bring everything up to the current tip before starting to serve
+            sync_chain_data(tx_sync.clone(), confirmables.clone())
+                .await
+                .map_err(|e| APIError::InvalidIndexer(e.to_string()))?;
             tokio::spawn(async move {
                 loop {
                     if stop_listen.load(Ordering::Acquire) {
@@ -6616,6 +6578,35 @@ async fn start_lightning(
         });
     }
 
+    // Regularly broadcast our node_announcement. This is only required (or possible) if we have
+    // some public channels.
+    let mut ldk_announced_listen_addr = Vec::new();
+    for addr in unlock_request.announce_addresses {
+        match SocketAddress::from_str(&addr) {
+            Ok(sa) => {
+                ldk_announced_listen_addr.push(sa);
+            }
+            Err(_) => {
+                return Err(APIError::InvalidAnnounceAddresses(format!(
+                    "failed to parse address '{addr}'"
+                )))
+            }
+        }
+    }
+    let ldk_announced_node_name = match unlock_request.announce_alias {
+        Some(s) => {
+            if s.len() > 32 {
+                return Err(APIError::InvalidAnnounceAlias(s!(
+                    "cannot be longer than 32 bytes"
+                )));
+            }
+            let mut bytes = [0; 32];
+            bytes[..s.len()].copy_from_slice(s.as_bytes());
+            bytes
+        }
+        None => [0; 32],
+    };
+
     // cleanup the buffers of RGB file transfers a peer started and never finished
     let sweep_handler = Arc::clone(&rgb_file_transfer_handler);
     let stop_sweep = Arc::clone(&stop_processing);
@@ -6633,24 +6624,17 @@ async fn start_lightning(
 
     let peer_man = Arc::clone(&peer_manager);
     let chan_man = Arc::clone(&channel_manager);
-    let announcement_shutdown = shutdown.clone();
     let announce_initial_delay_secs = static_state.config.node.announce_initial_delay_secs;
     let announce_refresh_interval_secs = static_state.config.node.announce_refresh_interval_secs;
-    let announcement_task = tokio::spawn(async move {
+    tokio::spawn(async move {
         // First wait until we have some peers and maybe have opened a channel.
-        tokio::select! {
-            _ = announcement_shutdown.cancelled() => return,
-            _ = tokio::time::sleep(Duration::from_secs(announce_initial_delay_secs)) => {}
-        }
+        tokio::time::sleep(Duration::from_secs(announce_initial_delay_secs)).await;
         // Then, update our announcement periodically to keep it fresh but avoid unnecessary churn
         // in the global gossip network.
         let mut interval =
             tokio::time::interval(Duration::from_secs(announce_refresh_interval_secs));
         loop {
-            tokio::select! {
-                _ = announcement_shutdown.cancelled() => break,
-                _ = interval.tick() => {}
-            }
+            interval.tick().await;
             // Don't bother trying to announce if we don't have any public channls, though our
             // peers should drop such an announcement anyway. Note that announcement may not
             // propagate until we have a channel with 6+ confirmations.
@@ -6683,8 +6667,6 @@ async fn start_lightning(
             peer_manager: peer_manager.clone(),
             bp_exit,
             background_processor: Some(background_processor),
-            shutdown,
-            tasks: vec![listener_task, announcement_task],
         }),
         Arc::new(UnlockedAppState {
             common,
@@ -6724,7 +6706,6 @@ impl AppState {
         ldk_background_services
             .stop_processing
             .store(true, Ordering::Release);
-        ldk_background_services.shutdown.cancel();
         ldk_background_services.gossip_shutdown.notify_one();
         ldk_background_services.peer_manager.disconnect_all_peers();
 
@@ -6992,15 +6973,23 @@ pub(crate) async fn stop_node(app_state: Arc<AppState>) {
         release_vss_fence(Arc::clone(&common.kv_store), teardown).await;
     }
 
-    if let Some(services) = lightning {
-        for mut task in services.tasks {
-            match tokio::time::timeout(Duration::from_secs(5), &mut task).await {
-                Ok(Ok(())) => {}
-                Ok(Err(error)) => tracing::error!(%error, "Lightning task failed during shutdown"),
-                Err(_) => {
-                    task.abort();
-                    tracing::warn!("Lightning task did not exit after cancellation");
-                }
+    // Only an owned Lightning listener needs the baseline wakeup and port-release wait.
+    // A wallet-only or already-stopped session must not contact an unused peer port.
+    if lightning.is_some() {
+        // connect to the peer port so it can be released
+        let peer_port = app_state.static_state.ldk_peer_listening_port;
+        let sock_addr = SocketAddr::from(([127, 0, 0, 1], peer_port));
+        let _ = check_port_is_available(peer_port);
+        // check the peer port has been released
+        let t_0 = OffsetDateTime::now_utc();
+        loop {
+            tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+            if TcpListener::bind(sock_addr).is_ok() {
+                break;
+            }
+            if (OffsetDateTime::now_utc() - t_0).as_seconds_f32() > 10.0 {
+                tracing::error!("LDK peer port {peer_port} was not released within 10s");
+                break;
             }
         }
     }

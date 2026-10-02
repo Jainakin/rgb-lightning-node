@@ -80,7 +80,7 @@ pub(crate) struct DaemonEnvelopeTransport {
     /// Pre-encoded `SignerRequest::Bootstrap` envelope, replayed by [`Self::reconnect`].
     bootstrap_request: Vec<u8>,
     /// Marked down when a call observes a broken connection and up when one re-establishes it.
-    /// Exposed via [`ExternalSignerTransport::link_watch`] so `start_ldk` drives `signer_unblocked`
+    /// Exposed via [`ExternalSignerTransport::link_watch`] so `start_lightning` drives `signer_unblocked`
     /// exactly while there's an outage to recover from, instead of polling forever.
     link: Arc<SignerLinkWatch>,
 }
@@ -411,7 +411,7 @@ mod tests {
         ok.expect("reconnect");
     }
 
-    /// The event-driven half of the `signer_unblocked` resilience fix in `start_ldk`: a genuine
+    /// The event-driven half of the `signer_unblocked` resilience fix in `start_lightning`: a genuine
     /// reconnect (recovering from a dropped connection, not the initial connect) must fire the
     /// link watch's `changed()` signal with `is_connected` back to `true`, so a waiting task can
     /// react immediately instead of waiting out a polling interval.

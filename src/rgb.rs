@@ -636,7 +636,7 @@ impl RgbLibWalletWrapper {
     }
 
     /// Returns the wallet's configured `VssBackupClient`, if any. This is the
-    /// client constructed by `configure_vss_backup` in `start_ldk`; callers
+    /// client constructed by `configure_vss_backup` during common wallet startup; callers
     /// (e.g. the manual `/vssbackup` route) reuse it instead of building a
     /// duplicate with the same configuration.
     #[cfg(feature = "vss")]

@@ -4714,6 +4714,33 @@ mod tests {
     use tokio::sync::Mutex as TokioMutex;
     use tokio_util::sync::CancellationToken;
 
+    // Poll the actual admission helper behind the session mutex; no sleep or spawned-task race.
+    #[tokio::test]
+    async fn queued_locked_admission_rechecks_transition() {
+        use std::future::{poll_fn, Future};
+        use std::task::Poll;
+        let state = mock_locked_state();
+        let storage_dir = state.static_state.storage_dir_path.clone();
+        let guard = state.unlocked_app_state.lock().await;
+        assert!(guard.is_none());
+        let mut waiting = std::pin::pin!(check_locked(&state));
+        poll_fn(|cx| {
+            assert!(waiting.as_mut().poll(cx).is_pending());
+            Poll::Ready(())
+        })
+        .await;
+        *state.changing_state.lock().unwrap() = true;
+        drop(guard);
+        assert!(matches!(
+            waiting.await,
+            Err(crate::error::APIError::ChangingState)
+        ));
+        assert!(state.unlocked_app_state.lock().await.is_none());
+        assert!(state.ldk_background_services.lock().unwrap().is_none());
+        *state.changing_state.lock().unwrap() = false;
+        std::fs::remove_dir_all(storage_dir).unwrap();
+    }
+
     #[test]
     fn verify_message_signature_accepts_known_lightning_vector_and_rejects_tampering() {
         let message = b"is this compatible?";
