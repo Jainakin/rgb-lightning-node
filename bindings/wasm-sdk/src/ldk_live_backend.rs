@@ -79,7 +79,8 @@ thread_local! {
 /// Register the RGB wallet for a given LDK runtime key.
 ///
 /// Must be called (with a wallet that has already called `go_online`) before the LDK object
-/// graph is first built for that runtime.  Called automatically from `attach_wallet_shared`.
+/// graph is first built for that runtime. Node preparation registers the shared wallet;
+/// subsequent `attach_wallet_shared` calls update an already prepared runtime.
 pub fn register_rgb_wallet_for_runtime(
     runtime_key: &str,
     wallet: Rc<RefCell<rgb_lib_wasm::Wallet>>,
@@ -114,6 +115,14 @@ fn virtual_channels_v0_enabled(runtime_key: &str) -> bool {
         .unwrap_or(false)
 }
 
+#[cfg(test)]
+pub(crate) fn registered_node_config_for_tests(runtime_key: &str) -> (bool, Option<bool>) {
+    (
+        RGB_WALLET_REGISTRY.with(|registry| registry.borrow().contains_key(runtime_key)),
+        VIRTUAL_CHANNELS_V0_REGISTRY.with(|registry| registry.borrow().get(runtime_key).copied()),
+    )
+}
+
 // ---------------------------------------------------------------------------
 // Selecting the node's Bitcoin network
 // ---------------------------------------------------------------------------
@@ -145,7 +154,7 @@ fn virtual_channels_v0_enabled(runtime_key: &str) -> bool {
 // matching the historical hardcoded behaviour.
 thread_local! {
     /// Maps LDK runtime_key → the Bitcoin network the node operates on.
-    /// Set from `attach_wallet_shared` (derived from the attached RGB wallet); consumed when the live
+    /// Set during node runtime preparation from its configured/adopted network; consumed when the live
     /// backend builds the `ChannelManager`/`NetworkGraph` so the LDK handshake advertises the correct
     /// chain (the `networks` field of the `Init` message) instead of the historical Regtest default.
     static NETWORK_REGISTRY: RefCell<HashMap<String, bitcoin::Network>> =

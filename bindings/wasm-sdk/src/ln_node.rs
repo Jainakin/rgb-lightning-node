@@ -400,6 +400,7 @@ struct NodeRuntimeScope {
     lightning: Rc<RefCell<Option<Rc<NodeLightningRuntime>>>>,
     wallet_identity: RefCell<Option<String>>,
     identity_wallet: RefCell<Option<Rc<RefCell<rgb_lib_wasm::Wallet>>>>,
+    enable_virtual_channels_v0: Rc<RefCell<bool>>,
     network_transition: Cell<bool>,
     vss_owned: Rc<Cell<bool>>,
 }
@@ -443,7 +444,7 @@ pub struct RlnWasmNode {
     configured_network: Rc<RefCell<String>>,
     wallet: RefCell<Option<std::rc::Rc<RefCell<rgb_lib_wasm::Wallet>>>>,
     relay_session_auth: RefCell<Option<RlnWasmNodeRelaySessionAuthData>>,
-    enable_virtual_channels_v0: RefCell<bool>,
+    enable_virtual_channels_v0: Rc<RefCell<bool>>,
     reconnect_manager_running: Rc<RefCell<bool>>,
     reconnect_manager_backoff_ms: Rc<RefCell<u32>>,
     auto_drive_running: Rc<RefCell<bool>>,
@@ -494,7 +495,7 @@ impl RlnWasmNode {
                 &runtime_key,
                 crate::ldk_live_backend::rgb_network_to_bitcoin_network(selected),
             );
-            if let Some(wallet) = self.wallet.borrow().as_ref() {
+            if let Some(wallet) = self.runtime_scope.identity_wallet.borrow().as_ref() {
                 crate::ldk_live_backend::register_rgb_wallet_for_runtime(
                     &runtime_key,
                     Rc::clone(wallet),
@@ -683,6 +684,12 @@ impl RlnWasmNode {
                 lightning: Rc::new(RefCell::new(None)),
                 wallet_identity: RefCell::new(None),
                 identity_wallet: RefCell::new(None),
+                enable_virtual_channels_v0: Rc::new(RefCell::new(
+                    load_virtual_channels_v0_flag(
+                        &persistence_keys.virtual_channels_v0_storage_key,
+                    )
+                    .unwrap_or_else(crate::sdk_default_enable_virtual_channels_v0),
+                )),
                 network_transition: Cell::new(false),
                 vss_owned: Rc::new(Cell::new(false)),
             });
@@ -715,12 +722,10 @@ impl RlnWasmNode {
             })
             .unwrap_or_default();
         let restored_network = runtime_scope.network.borrow().clone();
-        let enable_virtual_channels_v0 =
-            load_virtual_channels_v0_flag(&persistence_keys.virtual_channels_v0_storage_key)
-                .unwrap_or_else(crate::sdk_default_enable_virtual_channels_v0);
         let node = Self {
             lightning: Rc::clone(&runtime_scope.lightning),
             configured_network: Rc::clone(&runtime_scope.network),
+            enable_virtual_channels_v0: Rc::clone(&runtime_scope.enable_virtual_channels_v0),
             runtime_scope,
             live_node_seed,
             auto_hooks_installed: Cell::new(false),
@@ -741,7 +746,6 @@ impl RlnWasmNode {
             network: RefCell::new(restored_network),
             wallet: RefCell::new(None),
             relay_session_auth: RefCell::new(None),
-            enable_virtual_channels_v0: RefCell::new(enable_virtual_channels_v0),
             reconnect_manager_running: Rc::new(RefCell::new(false)),
             reconnect_manager_backoff_ms: Rc::new(RefCell::new(RECONNECT_MANAGER_INITIAL_DELAY_MS)),
             auto_drive_running: Rc::new(RefCell::new(false)),
@@ -1316,19 +1320,30 @@ impl RlnWasmNode {
         if *self.reconnect_manager_running.borrow() {
             return self.reconnect_manager_status_value();
         }
-        *self.reconnect_manager_running.borrow_mut() = true;
-        *self.reconnect_manager_backoff_ms.borrow_mut() = RECONNECT_MANAGER_INITIAL_DELAY_MS;
+        // Bare nodes are dormant until a Lightning operation selects their runtime.
+        // Preserve constructor-equivalent preparation before publishing a running loop.
+        self.prepare_lightning_runtime(false)?;
+        let runtime = self.lightning_runtime()?;
+        if !self.auto_hooks_installed.get() {
+            self.install_auto_peer_manager_hooks_inner();
+        }
+        self.register_runtime_scope_for_local_pubkey();
+        runtime.chain_sync.resume_if_running();
 
         let proxy_url = self.proxy_url.clone();
         let runtime_scope_key = self.persistence_keys.runtime_scope_key.clone();
         let peer_session_store_key = self.persistence_keys.peer_sessions_storage_key.clone();
         let relay_session_auth = self.relay_session_auth.borrow().clone();
         let peers = Rc::clone(&self.peers);
-        let ldk_runtime = Rc::clone(&self.lightning_runtime()?.ldk_runtime);
+        let ldk_runtime = Rc::clone(&runtime.ldk_runtime);
         let running = Rc::clone(&self.reconnect_manager_running);
         let backoff_ms = Rc::clone(&self.reconnect_manager_backoff_ms);
         let bridge = self.bridge.clone();
 
+        *self.reconnect_manager_running.borrow_mut() = true;
+        *self.reconnect_manager_backoff_ms.borrow_mut() = RECONNECT_MANAGER_INITIAL_DELAY_MS;
+        #[cfg(test)]
+        crate::ln_node::test_utils::record_startup_call("reconnect_task");
         spawn_local(async move {
             let _ = reconnect_persisted_peers_once(
                 &proxy_url,
@@ -3877,16 +3892,21 @@ impl RlnWasmNode {
     #[wasm_bindgen(js_name = driveRgbFundingWork)]
     pub async fn drive_rgb_funding_work(&self) -> Result<(), JsValue> {
         self.check_lightning_supported()?;
-        self.lightning_runtime()?
-            .ldk_runtime
-            .drive_rgb_funding_work_boxed()
-            .await
+        // With no live runtime, preserve the empty-backend no-op without loading saved work.
+        let Some(runtime) = self.lightning.borrow().as_ref().cloned() else {
+            return Ok(());
+        };
+        runtime.ldk_runtime.drive_rgb_funding_work_boxed().await
     }
 
     #[wasm_bindgen(js_name = processPendingRgbTransactions)]
     pub async fn process_pending_rgb_transactions(&self) -> Result<(), JsValue> {
         self.check_lightning_supported()?;
-        self.lightning_runtime()?
+        // With no live runtime, preserve the empty-backend no-op without loading saved work.
+        let Some(runtime) = self.lightning.borrow().as_ref().cloned() else {
+            return Ok(());
+        };
+        runtime
             .ldk_runtime
             .process_pending_rgb_transactions_boxed()
             .await

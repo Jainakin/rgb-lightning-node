@@ -796,3 +796,217 @@ async fn node_drop_releases_only_its_runtime_and_preserves_a_surviving_bridge() 
     ));
     assert!(!second_manager.status().ready);
 }
+
+fn cold_shared_node(proxy: &str, runtime_id: &str) -> RlnWasmNode {
+    RlnWasmNode::new_with_runtime_id_opt(proxy.into(), Some(runtime_id.into()), None).unwrap()
+}
+
+#[wasm_bindgen_test(async)]
+async fn cold_shared_wallet_reaches_live_backend_for_either_owner_and_activation_order() {
+    crate::test_utils::reset_wasm_runtime_state_for_tests();
+    let wallet = RlnWasmWallet::create(&crate::test_utils::test_wallet_data_json())
+        .await
+        .unwrap();
+    go_online_with_identity_fixture(&wallet, "regtest").await;
+    for owner_first in [false, true] {
+        for activate_owner in [false, true] {
+            let id = format!("wallet-{owner_first}-{activate_owner}");
+            let first = cold_shared_node("ws://cold-shared-wallet.invalid", &id);
+            let second = cold_shared_node("ws://cold-shared-wallet.invalid", &id);
+            let (owner, other) = if owner_first {
+                (first, second)
+            } else {
+                (second, first)
+            };
+            owner.attach_wallet(&wallet).unwrap();
+            assert!(owner.lightning.borrow().is_none());
+            assert!(other.lightning.borrow().is_none());
+            let initial = if activate_owner { &owner } else { &other };
+            initial.ensure_runtime_ready().unwrap();
+            owner.ensure_runtime_ready().unwrap();
+            other.ensure_runtime_ready().unwrap();
+            let expected: serde_json::Value =
+                serde_json::from_str(&owner.node_pubkey_json().unwrap()).unwrap();
+            let live = other
+                .lightning_runtime()
+                .unwrap()
+                .ldk_runtime
+                .live_node_pubkey()
+                .expect("the shared runtime must receive the already attached online wallet");
+            assert_eq!(expected["pubkey"], live);
+            assert!(Rc::ptr_eq(
+                &owner.lightning_runtime().unwrap(),
+                &other.lightning_runtime().unwrap()
+            ));
+        }
+    }
+    // The shared scope must retain the validated wallet if its attaching handle is dropped cold.
+    let owner = cold_shared_node("ws://cold-shared-wallet.invalid", "dropped-owner");
+    owner.attach_wallet(&wallet).unwrap();
+    let survivor = cold_shared_node("ws://cold-shared-wallet.invalid", "dropped-owner");
+    let expected = owner.node_pubkey_json().unwrap();
+    drop(owner);
+    survivor.ensure_runtime_ready().unwrap();
+    let live = survivor
+        .lightning_runtime()
+        .unwrap()
+        .ldk_runtime
+        .live_node_pubkey()
+        .unwrap();
+    let expected: serde_json::Value = serde_json::from_str(&expected).unwrap();
+    assert_eq!(expected["pubkey"], live);
+}
+
+#[wasm_bindgen_test]
+fn cold_shared_virtual_policy_survives_both_activation_orders_and_updates() {
+    crate::test_utils::reset_wasm_runtime_state_for_tests();
+    for enabled in [false, true] {
+        for activate_setter in [false, true] {
+            for setter_first in [false, true] {
+                let id = format!("policy-{enabled}-{activate_setter}-{setter_first}");
+                let first = cold_shared_node("ws://cold-shared-policy.invalid", &id);
+                let second = cold_shared_node("ws://cold-shared-policy.invalid", &id);
+                let (setter, other) = if setter_first {
+                    (first, second)
+                } else {
+                    (second, first)
+                };
+                setter.set_enable_virtual_channels_v0(!enabled);
+                setter.set_enable_virtual_channels_v0(enabled);
+                assert_eq!(
+                    crate::ldk_live_backend::registered_node_config_for_tests(
+                        &setter.runtime_manager_key()
+                    ),
+                    (false, None)
+                );
+                let initial = if activate_setter { &setter } else { &other };
+                initial.ensure_runtime_ready().unwrap();
+                assert_eq!(
+                    crate::ldk_live_backend::registered_node_config_for_tests(
+                        &setter.runtime_manager_key()
+                    ),
+                    (false, Some(enabled))
+                );
+                setter.ensure_runtime_ready().unwrap();
+                other.ensure_runtime_ready().unwrap();
+                for node in [&setter, &other] {
+                    let value: serde_json::Value =
+                        serde_json::from_str(&node.enable_virtual_channels_v0_json().unwrap())
+                            .unwrap();
+                    assert_eq!(value["enabled"], enabled);
+                }
+                other.set_enable_virtual_channels_v0(!enabled);
+                let value: serde_json::Value =
+                    serde_json::from_str(&setter.enable_virtual_channels_v0_json().unwrap())
+                        .unwrap();
+                assert_eq!(value["enabled"], !enabled);
+                assert_eq!(
+                    crate::ldk_live_backend::registered_node_config_for_tests(
+                        &setter.runtime_manager_key()
+                    ),
+                    (false, Some(!enabled))
+                );
+            }
+        }
+    }
+    let setter = cold_shared_node("ws://cold-shared-policy.invalid", "dropped-setter");
+    let survivor = cold_shared_node("ws://cold-shared-policy.invalid", "dropped-setter");
+    setter.set_enable_virtual_channels_v0(true);
+    drop(setter);
+    survivor.ensure_runtime_ready().unwrap();
+    assert_eq!(
+        crate::ldk_live_backend::registered_node_config_for_tests(&survivor.runtime_manager_key()),
+        (false, Some(true))
+    );
+}
+
+fn with_blocked_storage_read<T>(key: &str, action: impl FnOnce() -> T) -> T {
+    let storage = js_sys::Reflect::get(&js_sys::global(), &JsValue::from_str("Storage")).unwrap();
+    let prototype = js_sys::Reflect::get(&storage, &JsValue::from_str("prototype")).unwrap();
+    let original = js_sys::Reflect::get(&prototype, &JsValue::from_str("getItem")).unwrap();
+    let replacement = js_sys::Function::new_with_args("original, blocked", "return function(key) { if (key === blocked) throw new Error('injected reconnect read failure'); return original.call(this, key); };")
+        .call2(&JsValue::NULL, &original, &JsValue::from_str(key)).unwrap();
+    js_sys::Reflect::set(&prototype, &JsValue::from_str("getItem"), &replacement).unwrap();
+    let result = action();
+    js_sys::Reflect::set(&prototype, &JsValue::from_str("getItem"), &original).unwrap();
+    result
+}
+
+#[wasm_bindgen_test(async)]
+async fn cold_reconnect_start_prepares_once_and_failed_preparation_is_retryable() {
+    crate::test_utils::reset_wasm_runtime_state_for_tests();
+    let node = cold_shared_node("ws://cold-reconnect.invalid", "retry");
+    let before = test_utils::startup_calls();
+    let failure = with_blocked_storage_read(&node.persistence_keys.chain_sync_storage_key, || {
+        node.reconnect_manager_start_value()
+    });
+    assert!(failure.is_err());
+    assert!(
+        !*node.reconnect_manager_running.borrow(),
+        "failed preparation must not publish running state"
+    );
+    assert!(node.lightning.borrow().is_none());
+    assert_eq!(node.configured_network.borrow().as_str(), "unknown");
+    assert_eq!(
+        test_utils::startup_calls().get("reconnect_task"),
+        before.get("reconnect_task")
+    );
+    assert!(!node.auto_hooks_installed.get());
+
+    let started: serde_json::Value =
+        serde_json::from_str(&node.reconnect_manager_start_json().unwrap()).unwrap();
+    assert_eq!(started["running"], true);
+    assert_eq!(node.configured_network.borrow().as_str(), "regtest");
+    assert_eq!(node.bridge.connection_hooks_ready().unwrap(), (true, true));
+    let calls = test_utils::startup_calls();
+    assert_eq!(
+        calls.get("reconnect_task").copied().unwrap_or(0),
+        before.get("reconnect_task").copied().unwrap_or(0) + 1
+    );
+    node.reconnect_manager_start_value().unwrap();
+    assert_eq!(
+        test_utils::startup_calls(),
+        calls,
+        "idempotent start must not spawn a second loop"
+    );
+    node.reconnect_manager_stop_value().unwrap();
+    sleep_ms(0).await;
+    assert!(!*node.reconnect_manager_running.borrow());
+}
+
+#[wasm_bindgen_test(async)]
+async fn cold_funding_workers_preserve_empty_runtime_noop() {
+    crate::test_utils::reset_wasm_runtime_state_for_tests();
+    let node = cold_shared_node("ws://cold-funding-workers.invalid", "empty");
+    let before = test_utils::startup_calls();
+    node.drive_rgb_funding_work().await.unwrap();
+    node.process_pending_rgb_transactions().await.unwrap();
+    assert!(node.lightning.borrow().is_none());
+    assert_eq!(test_utils::startup_calls(), before);
+}
+
+#[wasm_bindgen_test(async)]
+async fn mainnet_shared_wallet_policy_and_reconnect_never_register_or_start() {
+    crate::test_utils::reset_wasm_runtime_state_for_tests();
+    crate::runtime_store::preload_runtime_state_from_persistent_store()
+        .await
+        .unwrap();
+    let wallet = mainnet_wallet().await;
+    let node = cold_shared_node("ws://mainnet-shared-policy.invalid", "shared");
+    let other = cold_shared_node("ws://mainnet-shared-policy.invalid", "shared");
+    let before = test_utils::startup_calls();
+    node.attach_wallet(&wallet).unwrap();
+    node.set_enable_virtual_channels_v0(true);
+    for handle in [&node, &other] {
+        assert_mainnet_rejection(handle.reconnect_manager_start_value());
+        assert_mainnet_rejection(handle.reconnect_manager_start_json());
+        assert!(!*handle.reconnect_manager_running.borrow());
+        assert_eq!(
+            crate::ldk_live_backend::registered_node_config_for_tests(
+                &handle.runtime_manager_key()
+            ),
+            (false, None)
+        );
+    }
+    assert_eq!(test_utils::startup_calls(), before);
+}
